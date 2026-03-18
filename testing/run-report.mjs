@@ -58,7 +58,41 @@ function finalizeTranscript(state) {
   return text.length === 0 ? '(no output)' : `${text}\n`;
 }
 function stripControlForFrame(text) {
-  return sanitizeOutput(text).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+  return stripAnsi(text).replace(/\u0000/g, '').replace(/\p{Cf}/gu, '');
+}
+function createFrameState() {
+  return { lines: [''], cursorRow: 0, cursorCol: 0 };
+}
+function writeFrameChar(state, ch, cols) {
+  const current = state.lines[state.cursorRow] ?? '';
+  const padded = current.padEnd(state.cursorCol, ' ');
+  state.lines[state.cursorRow] = `${padded.slice(0, state.cursorCol)}${ch}${padded.slice(state.cursorCol + 1)}`.slice(0, cols);
+  state.cursorCol = Math.min(cols - 1, state.cursorCol + 1);
+}
+function applyFrameChunk(state, text, rows, cols) {
+  for (const ch of text) {
+    if (ch === '\r') {
+      state.cursorCol = 0;
+      continue;
+    }
+    if (ch === '\n') {
+      state.cursorRow += 1;
+      state.cursorCol = 0;
+      while (state.lines.length <= state.cursorRow) state.lines.push('');
+      if (state.lines.length > rows) {
+        state.lines.shift();
+        state.cursorRow = Math.max(0, state.cursorRow - 1);
+      }
+      continue;
+    }
+    if (ch === '\b') {
+      state.cursorCol = Math.max(0, state.cursorCol - 1);
+      continue;
+    }
+    if (ch >= ' ' || ch === '\t') {
+      writeFrameChar(state, ch === '\t' ? ' ' : ch, cols);
+    }
+  }
 }
 function normalScreenPortion(inAltAtStart, chunk) {
   const enter = /\x1b\[\?(?:1049|1047|47)h/g;
@@ -94,7 +128,7 @@ async function runPty(command, name) {
   const state = { lines: [], current: '' };
   let inAlt = false;
   let ansiBuffer = '';
-  const frameLines = [];
+  const frame = createFrameState();
   const snapshots = [];
   await new Promise((resolve) => {
     child.onData((chunk) => {
@@ -102,10 +136,9 @@ async function runPty(command, name) {
       ansiBuffer = (ansiBuffer + chunk).slice(-256);
       if (/\x1b\[\?1049h/.test(ansiBuffer)) inAlt = true;
       if (/\x1b\[\?1049l/.test(ansiBuffer)) inAlt = false;
-      const clean = stripControlForFrame(chunk).replace(/\r/g, '\n');
-      for (const line of clean.split('\n').filter(Boolean)) frameLines.push(line);
-      while (frameLines.length > 15) frameLines.shift();
-      snapshots.push([...frameLines]);
+      const clean = stripControlForFrame(chunk);
+      if (clean) applyFrameChunk(frame, clean, 15, 100);
+      snapshots.push([...frame.lines]);
       const visibleNormal = normalScreenPortion(startedAlt, chunk);
       if (visibleNormal) applyTranscriptChunk(state, stripAnsi(visibleNormal));
     });

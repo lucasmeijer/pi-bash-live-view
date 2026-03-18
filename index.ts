@@ -43,6 +43,12 @@ type Config = {
   debug: boolean;
 };
 
+type FrameState = {
+  lines: string[];
+  cursorRow: number;
+  cursorCol: number;
+};
+
 type LiveSession = {
   id: string;
   command: string;
@@ -52,7 +58,7 @@ type LiveSession = {
   visible: boolean;
   disposed: boolean;
   timer?: NodeJS.Timeout;
-  frameLines: string[];
+  frame: FrameState;
   lastRenderedFrame: string[];
   inAltScreen: boolean;
   inSyncRender: boolean;
@@ -141,7 +147,7 @@ function finalizeTranscript(state: TranscriptState) {
 }
 
 function stripControlForFrame(text: string) {
-  return sanitizeOutput(text).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+  return stripAnsi(text).replace(/\u0000/g, "").replace(/\p{Cf}/gu, "");
 }
 
 function detectModeTransitions(session: LiveSession, chunk: string) {
@@ -204,7 +210,7 @@ function updateFrame(session: LiveSession, chunk: string) {
 }
 
 function getRenderableLines(session: LiveSession) {
-  return session.inSyncRender ? session.lastRenderedFrame : session.frameLines;
+  return session.inSyncRender ? session.lastRenderedFrame : session.frame.lines;
 }
 
 function makeWidgetFactory(session: LiveSession) {
@@ -250,7 +256,7 @@ async function executePty(toolCallId: string, params: { command: string; timeout
     rows,
     visible: false,
     disposed: false,
-    frameLines: [],
+    frame: createFrameState(),
     lastRenderedFrame: [],
     inAltScreen: false,
     inSyncRender: false,
