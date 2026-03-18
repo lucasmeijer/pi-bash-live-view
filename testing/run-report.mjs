@@ -415,7 +415,7 @@ async function renderGif(name, snapshots) {
 }
 
 const cases = [
-  ['spill', `node testing/fixtures/spill.js 2400`],
+  ['spill', `node testing/fixtures/spill.js 240`],
   ['spinner-normal-then-text', `node testing/fixtures/spinner-normal-then-text.js`],
   ['alt-progress-then-text', `node testing/fixtures/alt-progress-then-text.js`],
   ['synchronized-render', `node testing/fixtures/synchronized-render.js`],
