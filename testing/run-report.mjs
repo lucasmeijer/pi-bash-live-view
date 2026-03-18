@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createRequire } from 'node:module';
 import { createBashTool, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from '@mariozechner/pi-coding-agent';
 import pty from 'node-pty';
 import stripAnsi from 'strip-ansi';
@@ -8,132 +7,17 @@ import { chromium } from 'playwright';
 import GIFEncoder from 'gifencoder';
 import sharp from 'sharp';
 import { PNG } from 'pngjs';
+import { buildWidgetAnsiLines, createLiveWidgetRenderer } from '../src/live-widget-core.js';
 
 const cwd = process.cwd();
 const outDir = path.join(cwd, 'artifacts');
 fs.mkdirSync(outDir, { recursive: true });
-const require = createRequire(import.meta.url);
 
-if (!globalThis.window) globalThis.window = {};
-const { Terminal } = require('xterm-headless');
-
-function ensureSpawnHelperExecutable() {
-  try {
-    const base = path.dirname(require.resolve('node-pty/package.json'));
-    for (const helper of [
-      path.join(base, 'prebuilds', 'darwin-arm64', 'spawn-helper'),
-      path.join(base, 'prebuilds', 'darwin-x64', 'spawn-helper'),
-    ]) {
-      if (fs.existsSync(helper)) fs.chmodSync(helper, 0o755);
-    }
-  } catch (error) {
-    console.warn('[bash-pty report] spawn-helper chmod failed', error);
-  }
-}
-
-ensureSpawnHelperExecutable();
-
-function sanitizeOutput(text) {
-  return stripAnsi(text).replace(/\r/g, '').replace(/\u0000/g, '');
-}
-function applyTranscriptChunk(state, text) {
-  for (const ch of text) {
-    if (state.pendingCR && ch !== '\n') state.current = '';
-    if (ch === '\r') {
-      state.pendingCR = true;
-      continue;
-    }
-    if (ch === '\n') {
-      state.lines.push(state.current);
-      state.current = '';
-      state.pendingCR = false;
-      continue;
-    }
-    if (ch === '\b') state.current = state.current.slice(0, -1);
-    else if (ch >= ' ' || ch === '\t') state.current += ch;
-    state.pendingCR = false;
-  }
-}
-function finalizeTranscript(state) {
-  const lines = [...state.lines];
-  if (state.current) lines.push(state.current);
-  const text = sanitizeOutput(lines.join('\n')).trimEnd();
-  return text.length === 0 ? '(no output)' : `${text}\n`;
-}
 function defaultStyle() {
   return { fg: null, bold: false, dim: false };
 }
 function cloneStyle(style) {
   return { fg: style.fg, bold: style.bold, dim: style.dim };
-}
-function cloneSnapshot(snapshot) {
-  return snapshot.map((line) => line.map((cell) => ({ ...cell, style: cloneStyle(cell.style ?? defaultStyle()) })));
-}
-function hexByte(n) {
-  return Math.max(0, Math.min(255, n)).toString(16).padStart(2, '0');
-}
-function rgbToHex(r, g, b) {
-  return `#${hexByte(r)}${hexByte(g)}${hexByte(b)}`;
-}
-function rgbIntToHex(value) {
-  return rgbToHex((value >> 16) & 255, (value >> 8) & 255, value & 255);
-}
-function buildAnsi256Palette() {
-  const base = [
-    '#000000', '#cd0000', '#00cd00', '#cdcd00', '#0000ee', '#cd00cd', '#00cdcd', '#e5e5e5',
-    '#7f7f7f', '#ff0000', '#00ff00', '#ffff00', '#5c5cff', '#ff00ff', '#00ffff', '#ffffff',
-  ];
-  const palette = [...base];
-  const steps = [0, 95, 135, 175, 215, 255];
-  for (let r = 0; r < 6; r++) {
-    for (let g = 0; g < 6; g++) {
-      for (let b = 0; b < 6; b++) {
-        palette.push(rgbToHex(steps[r], steps[g], steps[b]));
-      }
-    }
-  }
-  for (let i = 0; i < 24; i++) {
-    const value = 8 + i * 10;
-    palette.push(rgbToHex(value, value, value));
-  }
-  return palette;
-}
-const ANSI_256_PALETTE = buildAnsi256Palette();
-function ansi256ToHex(index) {
-  return ANSI_256_PALETTE[index] ?? null;
-}
-function colorFromCell(cell, useBackground = false) {
-  const isDefault = useBackground ? cell.isBgDefault() : cell.isFgDefault();
-  if (isDefault) return null;
-  const isRgb = useBackground ? cell.isBgRGB() : cell.isFgRGB();
-  const isPalette = useBackground ? cell.isBgPalette() : cell.isFgPalette();
-  const value = useBackground ? cell.getBgColor() : cell.getFgColor();
-  if (isRgb) return rgbIntToHex(value);
-  if (isPalette) return ansi256ToHex(value);
-  return null;
-}
-function styleFromCell(cell) {
-  const inverse = Boolean(cell.isInverse());
-  const fg = inverse ? (colorFromCell(cell, true) ?? null) : colorFromCell(cell, false);
-  return {
-    fg,
-    bold: Boolean(cell.isBold()),
-    dim: Boolean(cell.isDim()),
-  };
-}
-function styleToCss(style) {
-  const parts = [];
-  if (style.fg) parts.push(`color:${style.fg}`);
-  if (style.bold) parts.push('font-weight:700');
-  if (style.dim) parts.push('opacity:0.75');
-  return parts.join(';');
-}
-function svgAttrsForStyle(style) {
-  let attrs = '';
-  if (style.fg) attrs += ` fill="${style.fg}"`;
-  if (style.bold) attrs += ' font-weight="700"';
-  if (style.dim) attrs += ' opacity="0.75"';
-  return attrs;
 }
 function hexToRgb(hex) {
   const value = hex.replace(/^#/, '');
@@ -165,111 +49,22 @@ function applySgr(style, codes) {
       style.dim = false;
     } else if (code === 39) {
       style.fg = null;
-    } else if (code >= 30 && code <= 37) {
-      style.fg = ansi256ToHex(code - 30) ?? style.fg;
-    } else if (code >= 90 && code <= 97) {
-      style.fg = ansi256ToHex(code - 90 + 8) ?? style.fg;
     } else if (code === 38) {
       const mode = codes[i + 1];
       if (mode === 2 && i + 4 < codes.length) {
-        style.fg = rgbToHex(codes[i + 2], codes[i + 3], codes[i + 4]);
+        const [r, g, b] = [codes[i + 2], codes[i + 3], codes[i + 4]];
+        style.fg = `#${[r, g, b].map((n) => Math.max(0, Math.min(255, n)).toString(16).padStart(2, '0')).join('')}`;
         i += 4;
-      } else if (mode === 5 && i + 2 < codes.length) {
-        style.fg = ansi256ToHex(codes[i + 2]);
-        i += 2;
       }
     }
   }
 }
-function frameSnapshotToHtmlLines(lines) {
-  return lines.map((line) => {
-    if (!Array.isArray(line)) return esc(String(line ?? ''));
-    let html = '';
-    let currentCss = null;
-    let chunk = '';
-    const flush = () => {
-      if (!chunk) return;
-      const escaped = esc(chunk);
-      html += currentCss ? `<span style="${currentCss}">${escaped}</span>` : escaped;
-      chunk = '';
-    };
-    for (const cell of line) {
-      const css = styleToCss(cell.style ?? defaultStyle());
-      if (css !== currentCss) {
-        flush();
-        currentCss = css || null;
-      }
-      chunk += cell.ch;
-    }
-    flush();
-    return html.replace(/\s+$/g, '');
-  });
-}
-function frameSnapshotToAnsiLines(lines) {
-  return lines.map((line) => {
-    if (!Array.isArray(line)) return String(line ?? '');
-    let out = '';
-    let current = defaultStyle();
-    for (const cell of line) {
-      const style = cell.style ?? defaultStyle();
-      if (style.fg !== current.fg || style.bold !== current.bold || style.dim !== current.dim) {
-        out += '\x1b[0m' + styleToAnsi(style);
-        current = cloneStyle(style);
-      }
-      out += cell.ch;
-    }
-    return `${out}\x1b[0m`.replace(/\s+\x1b\[0m$/, '\x1b[0m');
-  });
-}
-function fitAnsiLine(line, width) {
-  let out = '';
-  let visible = 0;
-  let i = 0;
-  while (i < line.length && visible < width) {
-    if (line[i] === '\x1b' && line[i + 1] === '[') {
-      const match = line.slice(i).match(/^\x1b\[[0-9;]*m/);
-      if (match) {
-        out += match[0];
-        i += match[0].length;
-        continue;
-      }
-    }
-    out += line[i];
-    visible += 1;
-    i += 1;
-  }
-  return `${out}\x1b[0m${' '.repeat(Math.max(0, width - visible))}`;
-}
-function formatElapsed(ms) {
-  const totalSeconds = Math.max(0, ms / 1000);
-  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
-  const wholeSeconds = Math.floor(totalSeconds);
-  const hours = Math.floor(wholeSeconds / 3600);
-  const minutes = Math.floor((wholeSeconds % 3600) / 60);
-  const seconds = wholeSeconds % 60;
-  if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-  return `${minutes}:${String(seconds).padStart(2, '0')}`;
-}
-function buildTopBorder(title, innerWidth, elapsedMs) {
-  const timer = ` ${formatElapsed(elapsedMs)}`;
-  const rawTitle = title ? ` ${title} ` : '';
-  const titleText = rawTitle.slice(0, Math.max(0, innerWidth - timer.length - 1));
-  const fill = '─'.repeat(Math.max(0, innerWidth - titleText.length - timer.length));
-  return `${titleText}${fill}${timer}`.padEnd(innerWidth, '─').slice(0, innerWidth);
-}
-function buildWidgetAnsiLines(title, snapshot, width, rows, elapsedMs = 0) {
-  const accent = '\x1b[38;2;77;163;255m';
-  const reset = '\x1b[0m';
-  const innerWidth = Math.max(10, width - 2);
-  const top = `${accent}╭${buildTopBorder(title, innerWidth, elapsedMs)}╮${reset}`;
-  const bottom = `${accent}╰${'─'.repeat(innerWidth)}╯${reset}`;
-  const bodySource = frameSnapshotToAnsiLines(snapshot).slice(-rows);
-  const body = [];
-  for (let i = 0; i < rows; i++) {
-    const line = fitAnsiLine(bodySource[i] ?? '', innerWidth);
-    body.push(`${accent}│${reset}${line}${accent}│${reset}`);
-  }
-  return [top, ...body, bottom];
+function svgAttrsForStyle(style) {
+  let attrs = '';
+  if (style.fg) attrs += ` fill="${style.fg}"`;
+  if (style.bold) attrs += ' font-weight="700"';
+  if (style.dim) attrs += ' opacity="0.75"';
+  return attrs;
 }
 function escapeXml(text) {
   return text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
@@ -327,65 +122,6 @@ async function ansiLinesToPng(lines, pngPath) {
   svg += `</svg>`;
   await sharp(Buffer.from(svg)).png().toFile(pngPath);
 }
-function normalScreenPortion(inAltAtStart, chunk) {
-  const enter = /\x1b\[\?(?:1049|1047|47)h/g;
-  const exit = /\x1b\[\?(?:1049|1047|47)l/g;
-  let out = '';
-  let index = 0;
-  let inAlt = inAltAtStart;
-  while (index < chunk.length) {
-    if (inAlt) {
-      exit.lastIndex = index;
-      const match = exit.exec(chunk);
-      if (!match) break;
-      index = match.index + match[0].length;
-      inAlt = false;
-      continue;
-    }
-    enter.lastIndex = index;
-    const match = enter.exec(chunk);
-    if (!match) {
-      out += chunk.slice(index);
-      break;
-    }
-    out += chunk.slice(index, match.index);
-    index = match.index + match[0].length;
-    inAlt = true;
-  }
-  return out;
-}
-function createXterm(cols, rows) {
-  return new Terminal({
-    cols,
-    rows,
-    scrollback: 10_000,
-    allowProposedApi: true,
-  });
-}
-function snapshotTerminal(term) {
-  const buffer = term.buffer.active;
-  const start = buffer.baseY;
-  const lines = [];
-  const scratchCell = buffer.getNullCell();
-  for (let y = 0; y < term.rows; y++) {
-    const row = [];
-    const line = buffer.getLine(start + y);
-    for (let x = 0; x < term.cols; x++) {
-      const cell = line?.getCell(x, scratchCell);
-      if (!cell) {
-        row.push({ ch: ' ', style: defaultStyle() });
-        continue;
-      }
-      if (cell.getWidth() === 0) continue;
-      row.push({
-        ch: cell.getChars() || ' ',
-        style: styleFromCell(cell),
-      });
-    }
-    lines.push(row);
-  }
-  return lines;
-}
 
 async function runPty(command, name) {
   const cols = 100;
@@ -394,44 +130,19 @@ async function runPty(command, name) {
   const child = pty.spawn('/bin/bash', ['-lc', command], {
     name: 'xterm-256color', cols, rows, cwd, env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
   });
-  const term = createXterm(cols, rows);
-  const state = { lines: [], current: '' };
-  let inAlt = false;
-  let altBuffer = '';
-  let syncBuffer = '';
-  let inSyncRender = false;
-  let pendingWrites = Promise.resolve();
-  let lastCompletedSnapshot = snapshotTerminal(term);
+  const renderer = createLiveWidgetRenderer({ cols, rows, scrollback: 10_000 });
   const snapshots = [];
   await new Promise((resolve) => {
     child.onData((chunk) => {
-      const startedAlt = inAlt;
-      const receivedAt = Date.now() - startedAt;
-      altBuffer = (altBuffer + chunk).slice(-256);
-      syncBuffer = (syncBuffer + chunk).slice(-256);
-      if (/\x1b\[\?1049h/.test(altBuffer)) inAlt = true;
-      if (/\x1b\[\?1049l/.test(altBuffer)) inAlt = false;
-      if (/\x1b\[\?2026h/.test(syncBuffer)) inSyncRender = true;
-      if (/\x1b\[\?2026l/.test(syncBuffer)) inSyncRender = false;
-      pendingWrites = pendingWrites.then(() => new Promise((resolveWrite) => {
-        term.write(chunk, () => {
-          const snapshot = snapshotTerminal(term);
-          if (!inSyncRender) lastCompletedSnapshot = snapshot;
-          snapshots.push({
-            elapsedMs: receivedAt,
-            lines: inSyncRender ? cloneSnapshot(lastCompletedSnapshot) : snapshot,
-          });
-          resolveWrite();
-        });
-      }));
-      const visibleNormal = normalScreenPortion(startedAlt, chunk);
-      if (visibleNormal) applyTranscriptChunk(state, stripAnsi(visibleNormal));
+      void renderer.push(chunk, { elapsedMs: Date.now() - startedAt }).then((frame) => {
+        snapshots.push(frame);
+      });
     });
     child.onExit(resolve);
   });
-  await pendingWrites;
-  term.dispose?.();
-  const truncation = truncateHead(finalizeTranscript(state), DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
+  await renderer.whenIdle();
+  const truncation = truncateHead(renderer.finalizeText(), DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
+  renderer.dispose();
   const jsonPath = path.join(outDir, `${name}.json`);
   fs.writeFileSync(jsonPath, JSON.stringify({ command, snapshots, truncation }, null, 2));
   return { command, snapshots, truncation, jsonPath };
@@ -461,17 +172,18 @@ async function renderGif(name, snapshots) {
   fs.rmSync(frameDir, { recursive: true, force: true });
   fs.mkdirSync(frameDir, { recursive: true });
   const pngPaths = [];
-  const step = Math.max(1, Math.floor(snapshots.length / 12));
-  for (let i = 0; i < snapshots.length; i += step) {
-    const frame = snapshots[i];
-    const lines = buildWidgetAnsiLines('Live terminal', frame.lines, 84, 15, frame.elapsedMs);
+  const sampled = snapshots.length ? snapshots : [{ elapsedMs: 0, snapshot: [[{ ch: '(no live frames)', style: defaultStyle() }]] }];
+  const step = Math.max(1, Math.floor(sampled.length / 12));
+  for (let i = 0; i < sampled.length; i += step) {
+    const frame = sampled[i];
+    const lines = buildWidgetAnsiLines({ title: 'Live terminal', snapshot: frame.snapshot, width: 84, rows: 15, elapsedMs: frame.elapsedMs });
     const pngPath = path.join(frameDir, `${String(pngPaths.length).padStart(3, '0')}.png`);
     await ansiLinesToPng(lines, pngPath);
     pngPaths.push(pngPath);
   }
-  if (snapshots.length > 0 && (snapshots.length - 1) % step !== 0) {
-    const frame = snapshots.at(-1) ?? { lines: [], elapsedMs: 0 };
-    const lines = buildWidgetAnsiLines('Live terminal', frame.lines, 84, 15, frame.elapsedMs);
+  if (sampled.length > 0 && (sampled.length - 1) % step !== 0) {
+    const frame = sampled.at(-1);
+    const lines = buildWidgetAnsiLines({ title: 'Live terminal', snapshot: frame.snapshot, width: 84, rows: 15, elapsedMs: frame.elapsedMs });
     const pngPath = path.join(frameDir, `${String(pngPaths.length).padStart(3, '0')}.png`);
     await ansiLinesToPng(lines, pngPath);
     pngPaths.push(pngPath);
@@ -493,6 +205,157 @@ async function renderGif(name, snapshots) {
   return { gifPath, pngPaths };
 }
 
+function buildApiExplainerHtml() {
+  const sharedApiExample = `import { createLiveWidgetRenderer } from '../src/live-widget-core.js';
+
+const renderer = createLiveWidgetRenderer({
+  cols: 100,
+  rows: 15,
+  scrollback: 10_000,
+  title: 'Live terminal',
+});
+
+await renderer.push(chunk, { elapsedMs: 1250 });
+await renderer.whenIdle();
+const ansiLines = renderer.getRenderableAnsiLines({ width: 84 });
+const finalText = renderer.finalizeText();
+renderer.dispose();`;
+
+  const liveWidgetExample = `const renderer = createLiveWidgetRenderer({ cols, rows, scrollback: CONFIG.scrollbackLines });
+
+renderer.subscribe(() => {
+  session.requestRender?.();
+});
+
+child.onData((chunk) => {
+  void renderer.push(chunk, { elapsedMs: Date.now() - session.startedAt });
+});
+
+render(width) {
+  return renderer.getRenderableAnsiLines({
+    width,
+    rows: session.rows,
+    elapsedMs: Date.now() - session.startedAt,
+  });
+}
+
+await renderer.whenIdle();
+const fullText = renderer.finalizeText();`;
+
+  const testExample = `const renderer = createLiveWidgetRenderer({ cols: 100, rows: 15, scrollback: 10_000 });
+const snapshots = [];
+
+child.onData((chunk) => {
+  void renderer.push(chunk, { elapsedMs: Date.now() - startedAt }).then((frame) => {
+    snapshots.push(frame);
+  });
+});
+
+await renderer.whenIdle();
+const truncation = truncateHead(renderer.finalizeText(), DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
+const gifLines = buildWidgetAnsiLines({
+  title: 'Live terminal',
+  snapshot: snapshots[0].snapshot,
+  width: 84,
+  rows: 15,
+  elapsedMs: snapshots[0].elapsedMs,
+});`;
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Reusable live widget API</title>
+  <style>
+    :root{color-scheme:dark}
+    body{font-family:Inter,system-ui,sans-serif;background:#0f1115;color:#eef2ff;margin:0;padding:32px;line-height:1.45}
+    h1,h2,h3{margin:0 0 12px}
+    p{color:#c8d2f0}
+    .hero{padding:24px;border:1px solid #293048;border-radius:16px;background:linear-gradient(180deg,#151a24,#10141c);margin-bottom:24px}
+    .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}
+    .card{border:1px solid #2a3247;border-radius:16px;padding:20px;background:#131826}
+    .flow{display:grid;grid-template-columns:1fr 120px 1fr;gap:16px;align-items:center;margin:24px 0}
+    .arrow{font-size:32px;text-align:center;color:#79b8ff}
+    code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+    pre{background:#0b0f17;border:1px solid #222a3d;border-radius:12px;padding:16px;overflow:auto;color:#d8e1ff}
+    ul{margin:0;padding-left:20px;color:#c8d2f0}
+    .pill{display:inline-block;padding:4px 10px;border-radius:999px;background:#1f2a40;color:#8ecaff;font-size:12px;margin-right:8px}
+    .api-table{width:100%;border-collapse:collapse;margin-top:12px}
+    .api-table td,.api-table th{border-top:1px solid #263047;padding:10px 12px;vertical-align:top;text-align:left}
+    .mini{font-size:13px;color:#9eb0d8}
+    .stack{display:flex;flex-direction:column;gap:16px}
+  </style>
+</head>
+<body>
+  <div class="hero">
+    <div class="pill">shared core</div><div class="pill">xterm-backed</div><div class="pill">used by runtime + report</div>
+    <h1>Reusable live widget API</h1>
+    <p>The test/report path and the live pi widget now share the same terminal-state component: <code>createLiveWidgetRenderer()</code>. That component owns xterm-headless state, synchronized-render snapshot locking, final transcript derivation, and ANSI widget-line generation.</p>
+  </div>
+
+  <div class="flow">
+    <div class="card"><h3>Live widget in <code>index.ts</code></h3><p>Uses the shared renderer for incoming PTY data, subscribes to completed updates, requests pi re-renders, and asks the renderer for bordered ANSI lines at paint time.</p></div>
+    <div class="arrow">⇄</div>
+    <div class="card"><h3>Report/tests in <code>testing/run-report.mjs</code></h3><p>Uses the same renderer for incoming PTY data, stores frame snapshots for GIFs, and uses the same final transcript and widget-line logic for artifacts.</p></div>
+  </div>
+
+  <div class="grid">
+    <div class="card stack">
+      <div>
+        <h2>Core constructor</h2>
+        <pre>${esc(sharedApiExample)}</pre>
+      </div>
+      <div>
+        <h3>API surface</h3>
+        <table class="api-table">
+          <tr><th>Method</th><th>Purpose</th></tr>
+          <tr><td><code>push(chunk, { elapsedMs })</code></td><td>Feeds raw PTY bytes into xterm-headless, updates transcript state, honors alt-screen exclusion, and resolves with a renderable frame payload.</td></tr>
+          <tr><td><code>whenIdle()</code></td><td>Waits for all queued xterm writes to finish before finalizing text or ending a test capture.</td></tr>
+          <tr><td><code>subscribe(listener)</code></td><td>Receives completed-frame notifications; the live widget uses this to call <code>tui.requestRender()</code>.</td></tr>
+          <tr><td><code>getRenderableSnapshot()</code></td><td>Returns the current safe snapshot, reusing the last completed one during synchronized render locks.</td></tr>
+          <tr><td><code>getRenderableAnsiLines({ width, rows, elapsedMs })</code></td><td>Builds the bordered <code>Live terminal</code> widget exactly the way both runtime and report expect to consume it.</td></tr>
+          <tr><td><code>finalizeText()</code></td><td>Returns the plain-text tool result that excludes alt-screen-only content and collapses repaint/spinner updates.</td></tr>
+          <tr><td><code>dispose()</code></td><td>Disposes xterm resources and listeners.</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="card stack">
+      <div>
+        <h2>Why this matters</h2>
+        <ul>
+          <li>One terminal-state implementation now powers both human-visible review artifacts and the real live widget.</li>
+          <li>Synchronized updates are handled in one place, so tests and runtime agree about “last completed snapshot” behavior.</li>
+          <li>The report is no longer a separate prototype rendering path; it exercises the same shared component used by runtime.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Frame payload returned by <code>push()</code></h3>
+        <pre>{
+  elapsedMs: 1250,
+  snapshot: SnapshotCell[][],
+  inAltScreen: false,
+  inSyncRender: false
+}</pre>
+        <p class="mini">The tests keep these payloads for GIF generation. The live widget mostly ignores the payload body and instead triggers a repaint, then asks the renderer for fresh ANSI lines at actual render time.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid" style="margin-top:20px">
+    <div class="card">
+      <h2>How the live widget uses it</h2>
+      <pre>${esc(liveWidgetExample)}</pre>
+    </div>
+    <div class="card">
+      <h2>How the tests/report use it</h2>
+      <pre>${esc(testExample)}</pre>
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
 const cases = [
   ['spill', `node testing/fixtures/spill.js 240`],
   ['spinner-normal-then-text', `node testing/fixtures/spinner-normal-then-text.js`],
@@ -509,7 +372,7 @@ for (const [name, command] of cases) {
   const fixture = readFixtureSource(command);
   const ptyResult = await runPty(command, name);
   const builtin = await runBuiltin(command);
-  const media = await renderGif(name, ptyResult.snapshots.length ? ptyResult.snapshots : [[{ ch: '(no live frames)', style: defaultStyle() }]]);
+  const media = await renderGif(name, ptyResult.snapshots);
   reportRows.push({ name, command, fixture, pty: ptyResult, builtin, media });
 }
 
@@ -522,7 +385,7 @@ img{max-width:100%;border-radius:8px;border:1px solid #333}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 a{color:#8ecaff}
 .meta{color:#aaa;font-size:14px}
-</style></head><body><h1>bash-pty master report</h1><p class="meta">Rerun everything with <code>npm run report</code>.</p>${reportRows.map((row)=>`
+</style></head><body><h1>bash-pty master report</h1><p class="meta">Rerun everything with <code>npm run report</code>. Reusable API explainer: <a href="reusable-live-widget-api.html">artifacts/reusable-live-widget-api.html</a></p>${reportRows.map((row)=>`
 <div class="case">
 <h2>${esc(row.name)}</h2>
 <p><code>${esc(row.command)}</code></p>
@@ -537,6 +400,7 @@ ${row.fixture ? `<details><summary>Fixture source: <code>${esc(row.fixture.path)
 
 const reportPath = path.join(outDir, 'master-report.html');
 fs.writeFileSync(reportPath, html);
+fs.writeFileSync(path.join(outDir, 'reusable-live-widget-api.html'), buildApiExplainerHtml());
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1440, height: 2200 } });
 await page.goto(`file://${reportPath}`);

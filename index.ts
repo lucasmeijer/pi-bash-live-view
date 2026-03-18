@@ -1,39 +1,15 @@
 import { createBashTool, getShellConfig, truncateHead, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import stripAnsi from "strip-ansi";
 import pty from "node-pty";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { createLiveWidgetRenderer } from "./src/live-widget-core.js";
 
 const CONFIG = loadConfig();
 const WIDGET_PREFIX = "bash-pty/live/";
-const sessions = new Map<string, LiveSession>();
-let latestCtx: ExtensionContext | null = null;
 const require = createRequire(import.meta.url);
-
-function ensureSpawnHelperExecutable() {
-  try {
-    const base = path.dirname(require.resolve('node-pty/package.json'));
-    for (const helper of [
-      path.join(base, 'prebuilds', 'darwin-arm64', 'spawn-helper'),
-      path.join(base, 'prebuilds', 'darwin-x64', 'spawn-helper'),
-    ]) {
-      if (fs.existsSync(helper)) fs.chmodSync(helper, 0o755);
-    }
-  } catch (error) {
-    debug('spawn-helper chmod failed', error);
-  }
-}
-
-ensureSpawnHelperExecutable();
-
-const bashParams = Type.Object({
-  command: Type.String({ description: "Command to execute" }),
-  timeout: Type.Optional(Type.Number({ description: "Timeout in seconds" })),
-  usePTY: Type.Optional(Type.Boolean({ description: "Run inside a PTY with a live terminal widget" })),
-});
 
 type Config = {
   widgetDelayMs: number;
@@ -43,11 +19,7 @@ type Config = {
   debug: boolean;
 };
 
-type FrameState = {
-  lines: string[];
-  cursorRow: number;
-  cursorCol: number;
-};
+type LiveWidgetRenderer = ReturnType<typeof createLiveWidgetRenderer>;
 
 type LiveSession = {
   id: string;
@@ -58,21 +30,31 @@ type LiveSession = {
   visible: boolean;
   disposed: boolean;
   timer?: NodeJS.Timeout;
-  frame: FrameState;
-  lastRenderedFrame: string[];
-  inAltScreen: boolean;
-  inSyncRender: boolean;
-  ansiBuffer: string;
-  transcript: TranscriptState;
-  artifactsDir?: string;
-  frameCounter: number;
+  renderer: LiveWidgetRenderer;
+  requestRender?: () => void;
 };
 
-type TranscriptState = {
-  lines: string[];
-  current: string;
-  pendingCR?: boolean;
-};
+const bashParams = Type.Object({
+  command: Type.String({ description: "Command to execute" }),
+  timeout: Type.Optional(Type.Number({ description: "Timeout in seconds" })),
+  usePTY: Type.Optional(Type.Boolean({ description: "Run inside a PTY with a live terminal widget" })),
+});
+
+function ensureSpawnHelperExecutable() {
+  try {
+    const base = path.dirname(require.resolve("node-pty/package.json"));
+    for (const helper of [
+      path.join(base, "prebuilds", "darwin-arm64", "spawn-helper"),
+      path.join(base, "prebuilds", "darwin-x64", "spawn-helper"),
+    ]) {
+      if (fs.existsSync(helper)) fs.chmodSync(helper, 0o755);
+    }
+  } catch (error) {
+    debug("spawn-helper chmod failed", error);
+  }
+}
+
+ensureSpawnHelperExecutable();
 
 function loadConfig(): Config {
   const defaults: Config = {
@@ -113,141 +95,20 @@ function debug(...args: unknown[]) {
   }
 }
 
-function sanitizeOutput(text: string) {
-  return stripAnsi(text).replace(/\r/g, "").replace(/\u0000/g, "").replace(/\p{Cf}/gu, "");
-}
-
-function applyTranscriptChunk(state: TranscriptState, text: string) {
-  for (const ch of text) {
-    if (state.pendingCR && ch !== "\n") state.current = "";
-    if (ch === "\r") {
-      state.pendingCR = true;
-      continue;
-    }
-    if (ch === "\n") {
-      state.lines.push(state.current);
-      state.current = "";
-      state.pendingCR = false;
-      continue;
-    }
-    if (ch === "\b") {
-      state.current = state.current.slice(0, -1);
-    } else if (ch >= " " || ch === "\t") {
-      state.current += ch;
-    }
-    state.pendingCR = false;
-  }
-}
-
-function finalizeTranscript(state: TranscriptState) {
-  const lines = [...state.lines];
-  if (state.current.length > 0) lines.push(state.current);
-  const text = sanitizeOutput(lines.join("\n")).trimEnd();
-  return text.length === 0 ? "(no output)" : `${text}\n`;
-}
-
-function stripControlForFrame(text: string) {
-  return stripAnsi(text).replace(/\u0000/g, "").replace(/\p{Cf}/gu, "");
-}
-
-function detectModeTransitions(session: LiveSession, chunk: string) {
-  session.ansiBuffer = (session.ansiBuffer + chunk).slice(-256);
-  if (/\x1b\[\?1049h/.test(session.ansiBuffer) || /\x1b\[\?47h/.test(session.ansiBuffer) || /\x1b\[\?1047h/.test(session.ansiBuffer)) {
-    session.inAltScreen = true;
-  }
-  if (/\x1b\[\?1049l/.test(session.ansiBuffer) || /\x1b\[\?47l/.test(session.ansiBuffer) || /\x1b\[\?1047l/.test(session.ansiBuffer)) {
-    session.inAltScreen = false;
-  }
-  if (/\x1b\[\?2026h/.test(session.ansiBuffer)) {
-    session.inSyncRender = true;
-  }
-  if (/\x1b\[\?2026l/.test(session.ansiBuffer)) {
-    session.inSyncRender = false;
-  }
-}
-
-function normalScreenPortion(startInAlt: boolean, chunk: string) {
-  const enter = /\x1b\[\?(?:1049|1047|47)h/g;
-  const exit = /\x1b\[\?(?:1049|1047|47)l/g;
-  let out = '';
-  let index = 0;
-  let inAlt = startInAlt;
-  while (index < chunk.length) {
-    if (inAlt) {
-      exit.lastIndex = index;
-      const match = exit.exec(chunk);
-      if (!match) break;
-      index = match.index + match[0].length;
-      inAlt = false;
-      continue;
-    }
-    enter.lastIndex = index;
-    const match = enter.exec(chunk);
-    if (!match) {
-      out += chunk.slice(index);
-      break;
-    }
-    out += chunk.slice(index, match.index);
-    index = match.index + match[0].length;
-    inAlt = true;
-  }
-  return out;
-}
-
-function updateFrame(session: LiveSession, chunk: string) {
-  const clean = stripControlForFrame(chunk);
-  if (!clean) return;
-  const parts = clean.replace(/\r/g, "\n").split("\n").filter(Boolean);
-  if (parts.length === 0) return;
-  session.frameLines.push(...parts);
-  const max = session.rows;
-  if (session.frameLines.length > max) {
-    session.frameLines.splice(0, session.frameLines.length - max);
-  }
-  if (!session.inSyncRender) {
-    session.lastRenderedFrame = [...session.frameLines];
-  }
-}
-
-function getRenderableLines(session: LiveSession) {
-  return session.inSyncRender ? session.lastRenderedFrame : session.frame.lines;
-}
-
-function formatElapsed(ms: number) {
-  const totalSeconds = Math.max(0, ms / 1000);
-  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
-  const wholeSeconds = Math.floor(totalSeconds);
-  const hours = Math.floor(wholeSeconds / 3600);
-  const minutes = Math.floor((wholeSeconds % 3600) / 60);
-  const seconds = wholeSeconds % 60;
-  if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
-}
-
-function buildTopBorder(label: string, innerWidth: number, elapsedMs: number) {
-  const timer = ` ${formatElapsed(elapsedMs)}`;
-  const rawLabel = label ? ` ${label} ` : "";
-  const labelText = rawLabel.slice(0, Math.max(0, innerWidth - timer.length - 1));
-  const fill = "─".repeat(Math.max(0, innerWidth - labelText.length - timer.length));
-  return `${labelText}${fill}${timer}`.padEnd(innerWidth, "─").slice(0, innerWidth);
-}
-
 function makeWidgetFactory(session: LiveSession) {
-  return (_tui: any, theme: any) => ({
-    invalidate() {},
-    render(width: number) {
-      const innerWidth = Math.max(10, width - 2);
-      const top = theme.fg("accent", `╭${buildTopBorder("Live terminal", innerWidth, Date.now() - session.startedAt)}╮`);
-      const bottom = theme.fg("accent", `╰${"─".repeat(innerWidth)}╯`);
-      const lines = getRenderableLines(session).slice(-session.rows);
-      const body: string[] = [];
-      for (let i = 0; i < session.rows; i++) {
-        const line = (lines[i] ?? "").slice(0, innerWidth).padEnd(innerWidth, " ");
-        body.push(theme.fg("accent", "│") + line + theme.fg("accent", "│"));
-      }
-      return [top, ...body, bottom];
-    },
-  });
+  return (tui: any) => {
+    session.requestRender = () => tui.requestRender();
+    return {
+      invalidate() {},
+      render(width: number) {
+        return session.renderer.getRenderableAnsiLines({
+          width,
+          rows: session.rows,
+          elapsedMs: Date.now() - session.startedAt,
+        });
+      },
+    };
+  };
 }
 
 function showWidget(ctx: ExtensionContext, session: LiveSession) {
@@ -265,6 +126,7 @@ async function executePty(toolCallId: string, params: { command: string; timeout
   const shellConfig = getShellConfig(ctx.cwd);
   const cols = CONFIG.testWidth;
   const rows = CONFIG.widgetHeight;
+  const renderer = createLiveWidgetRenderer({ cols, rows, scrollback: CONFIG.scrollbackLines });
   const session: LiveSession = {
     id: toolCallId,
     command: params.command,
@@ -273,15 +135,12 @@ async function executePty(toolCallId: string, params: { command: string; timeout
     rows,
     visible: false,
     disposed: false,
-    frame: createFrameState(),
-    lastRenderedFrame: [],
-    inAltScreen: false,
-    inSyncRender: false,
-    ansiBuffer: "",
-    transcript: { lines: [], current: "" },
-    frameCounter: 0,
+    renderer,
   };
-  sessions.set(toolCallId, session);
+
+  const unsubscribe = renderer.subscribe(() => {
+    session.requestRender?.();
+  });
 
   if (ctx.hasUI) {
     session.timer = setTimeout(() => showWidget(ctx, session), CONFIG.widgetDelayMs);
@@ -300,7 +159,7 @@ async function executePty(toolCallId: string, params: { command: string; timeout
   });
 
   let timeoutHandle: NodeJS.Timeout | undefined;
-  const chunks: string[] = [];
+  let rawChunkCount = 0;
 
   const kill = () => {
     try {
@@ -313,27 +172,23 @@ async function executePty(toolCallId: string, params: { command: string; timeout
   }
   signal.addEventListener("abort", kill, { once: true });
 
-  const exit = await new Promise<{ exitCode: number | null }>((resolve, reject) => {
+  const exit = await new Promise<{ exitCode: number | null }>((resolve) => {
     child.onData((chunk) => {
-      chunks.push(chunk);
-      const startedAlt = session.inAltScreen;
-      detectModeTransitions(session, chunk);
-      updateFrame(session, chunk);
-      const visibleNormal = normalScreenPortion(startedAlt, chunk);
-      if (visibleNormal) {
-        applyTranscriptChunk(session.transcript, stripAnsi(visibleNormal));
-      }
+      rawChunkCount += 1;
+      void renderer.push(chunk, { elapsedMs: Date.now() - session.startedAt });
     });
     child.onExit((event) => resolve({ exitCode: event.exitCode }));
   });
 
+  await renderer.whenIdle();
   if (timeoutHandle) clearTimeout(timeoutHandle);
   if (session.timer) clearTimeout(session.timer);
   session.disposed = true;
   hideWidget(ctx, session);
-  sessions.delete(toolCallId);
+  unsubscribe();
 
-  const fullText = finalizeTranscript(session.transcript);
+  const fullText = renderer.finalizeText();
+  renderer.dispose();
   const truncation = truncateHead(fullText, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
   return {
     content: [{ type: "text" as const, text: truncation.content }],
@@ -341,7 +196,7 @@ async function executePty(toolCallId: string, params: { command: string; timeout
       truncation,
       exitCode: exit.exitCode,
       usedPTY: true,
-      rawChunkCount: chunks.length,
+      rawChunkCount,
     },
   };
 }
@@ -359,13 +214,6 @@ async function runSlashCommand(args: string, ctx: ExtensionCommandContext) {
 
 export default function bashTerminal(pi: ExtensionAPI) {
   const originalBash = createBashTool(process.cwd());
-
-  pi.on("session_start", async (_event, ctx) => {
-    latestCtx = ctx;
-  });
-  pi.on("session_switch", async (_event, ctx) => {
-    latestCtx = ctx;
-  });
 
   pi.registerTool({
     name: "bash",

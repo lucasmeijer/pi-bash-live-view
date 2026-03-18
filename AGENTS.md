@@ -31,6 +31,7 @@ This currently:
 - rebuilds animated GIFs
 - rebuilds `artifacts/master-report.html`
 - rebuilds `artifacts/master-report.png`
+- rebuilds `artifacts/reusable-live-widget-api.html`
 
 ### Run tests
 
@@ -69,14 +70,14 @@ Inside pi:
 
 ## Important implementation notes
 
+- The live widget and the report/test pipeline now share the same reusable `xterm-headless`-backed renderer in `src/live-widget-core.js`.
 - GIF/frame generation is intended to be close to production widget rendering.
-- The report pipeline now uses `xterm-headless` to derive terminal frame snapshots before converting widget lines into PNGs/GIFs.
-- The report rasterizer still converts ANSI-colored widget lines directly into PNGs instead of screenshotting HTML for GIF frames.
-- `xterm-headless` currently needs a small `globalThis.window = {}` shim in this repo's Node report runner before requiring it.
+- The report rasterizer still converts ANSI-colored widget lines directly into PNGs/GIFs instead of screenshotting HTML for GIF frames.
+- `xterm-headless` currently needs a small `globalThis.window = {}` shim before requiring it; the shared renderer handles that centrally.
 - The final browser screenshot is still used for verifying the master HTML review page.
 
 ## Known current gaps
 
-- `xterm-headless` is still not fully integrated for true terminal-state transcript extraction.
-- The live widget implementation is still simplified compared to the target in `PLAN.md`.
-- End-to-end pi-driven validation still needs more work.
+- transcript fidelity is still simplified; it is not yet true normal-screen + scrollback extraction from `xterm-headless` state
+- the shared renderer still outputs ANSI widget lines rather than a full production custom pi TUI cell renderer
+- end-to-end pi-driven validation still needs more work

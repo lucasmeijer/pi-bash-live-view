@@ -32,15 +32,16 @@ Implemented now:
 - delayed live widget scaffold
 - `/bash-pty` slash command
 - config loading from global/project JSON
+- a shared reusable renderer in `src/live-widget-core.js` used by both the live widget and the report/test pipeline
+- `xterm-headless`-backed PTY feeding, snapshotting, synchronized-render snapshot locking, and ANSI widget-line generation through that shared renderer
 - fixture-based test/report pipeline
 - master HTML report generation with GIFs and browser screenshot verification
-- report frame rasterization now renders from the same kind of **ANSI-colored widget lines** we intend to render in pi, instead of taking HTML screenshots for GIF frames
+- a visual explainer artifact at `artifacts/reusable-live-widget-api.html`
 - PTY-aware custom fixtures, including colored output and long-running `curl`/`ffmpeg` progress cases
 
 Still missing or intentionally simplified versus this plan:
-- no real `xterm-headless` integration yet for live widget state/transcript derivation
-- live widget is still simplified rather than a full custom TUI component with true terminal cell/color fidelity
 - transcript extraction is still simplified, not true normal-screen + scrollback extraction from xterm state
+- widget output still flows through shared ANSI widget lines rather than a full production custom TUI component with true cell/color fidelity
 - no full end-to-end pi-driven validation yet
 - no true production-quality truncation/temp-file parity yet
 
