@@ -213,20 +213,37 @@ function getRenderableLines(session: LiveSession) {
   return session.inSyncRender ? session.lastRenderedFrame : session.frame.lines;
 }
 
+function formatElapsed(ms: number) {
+  const totalSeconds = Math.max(0, ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
+  const wholeSeconds = Math.floor(totalSeconds);
+  const hours = Math.floor(wholeSeconds / 3600);
+  const minutes = Math.floor((wholeSeconds % 3600) / 60);
+  const seconds = wholeSeconds % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function buildTopBorder(label: string, innerWidth: number, elapsedMs: number) {
+  const timer = ` ${formatElapsed(elapsedMs)}`;
+  const rawLabel = label ? ` ${label} ` : "";
+  const labelText = rawLabel.slice(0, Math.max(0, innerWidth - timer.length - 1));
+  const fill = "─".repeat(Math.max(0, innerWidth - labelText.length - timer.length));
+  return `${labelText}${fill}${timer}`.padEnd(innerWidth, "─").slice(0, innerWidth);
+}
+
 function makeWidgetFactory(session: LiveSession) {
   return (_tui: any, theme: any) => ({
     invalidate() {},
     render(width: number) {
-      const elapsed = ((Date.now() - session.startedAt) / 1000).toFixed(1);
-      const innerWidth = Math.max(10, width - 4);
-      const header = ` Live terminal ${elapsed}s `;
-      const top = theme.fg("accent", `┌${header}${"─".repeat(Math.max(0, width - 2 - header.length))}┐`);
-      const bottom = theme.fg("accent", `└${"─".repeat(Math.max(0, width - 2))}┘`);
+      const innerWidth = Math.max(10, width - 2);
+      const top = theme.fg("accent", `╭${buildTopBorder("Live terminal", innerWidth, Date.now() - session.startedAt)}╮`);
+      const bottom = theme.fg("accent", `╰${"─".repeat(innerWidth)}╯`);
       const lines = getRenderableLines(session).slice(-session.rows);
       const body: string[] = [];
       for (let i = 0; i < session.rows; i++) {
         const line = (lines[i] ?? "").slice(0, innerWidth).padEnd(innerWidth, " ");
-        body.push(theme.fg("accent", "│ ") + line + theme.fg("accent", " │"));
+        body.push(theme.fg("accent", "│") + line + theme.fg("accent", "│"));
       }
       return [top, ...body, bottom];
     },

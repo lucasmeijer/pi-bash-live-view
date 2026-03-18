@@ -15,9 +15,11 @@
 - updated the custom fixtures to emit ANSI colors in PTY mode so the live widget/gif path can visually verify color handling while the final tool text stays stripped
 - changed the `curl` and `ffmpeg` cases to long-running progress-producing commands so their PTY animations are observable for more than 5 seconds
 - changed frame rasterization so gif/png generation no longer screenshots HTML; instead it converts ANSI widget lines directly into SVG/PNG images, which is much closer to how pi will actually render line output
+- replaced the report runner's custom terminal-frame parser with `xterm-headless`-backed snapshotting, with a small Node-side `globalThis.window` shim so the package loads correctly here
 - updated the master report generator so rerunning everything is just `npm run report`
 - updated the master report to embed the actual fixture source code for each custom program
 - regenerated artifacts and manually confirmed from frame screenshots that spinner/spill/alt-progress now show ANSI colors, while `curl` and `ffmpeg` show real multi-second progress states
+- tightened widget border rendering in both the live widget and report renderer: body lines are now ANSI-truncated to the frame width, rounded corners are used, and the top border includes a right-aligned elapsed timer
 - manually spot-checked sample frames for spinner/alt-only/ffmpeg and confirmed the report page renders in a browser screenshot
 - updated `PLAN.md` to reflect that it remains the target architecture/spec and that the current repo only partially implements it
 - updated `PLAN.md` to require keeping `AGENTS.md` current with repo-local tooling commands/workflows

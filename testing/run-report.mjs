@@ -14,6 +14,9 @@ const outDir = path.join(cwd, 'artifacts');
 fs.mkdirSync(outDir, { recursive: true });
 const require = createRequire(import.meta.url);
 
+if (!globalThis.window) globalThis.window = {};
+const { Terminal } = require('xterm-headless');
+
 function ensureSpawnHelperExecutable() {
   try {
     const base = path.dirname(require.resolve('node-pty/package.json'));
@@ -57,127 +60,130 @@ function finalizeTranscript(state) {
   const text = sanitizeOutput(lines.join('\n')).trimEnd();
   return text.length === 0 ? '(no output)' : `${text}\n`;
 }
-function stripControlForFrame(text) {
-  return text.replace(/\u0000/g, '').replace(/\p{Cf}/gu, '');
-}
-function createFrameState() {
-  return { lines: [[{ ch: ' ', style: defaultStyle() }]], cursorRow: 0, cursorCol: 0, style: defaultStyle() };
-}
 function defaultStyle() {
   return { fg: null, bold: false, dim: false };
 }
 function cloneStyle(style) {
   return { fg: style.fg, bold: style.bold, dim: style.dim };
 }
-function styleToCss(style) {
-  const colors = {
-    red: '#ff6b6b',
-    green: '#51cf66',
-    yellow: '#ffd43b',
-    blue: '#74c0fc',
-    magenta: '#f783ff',
-    cyan: '#66d9e8',
-    gray: '#adb5bd',
+function cloneSnapshot(snapshot) {
+  return snapshot.map((line) => line.map((cell) => ({ ...cell, style: cloneStyle(cell.style ?? defaultStyle()) })));
+}
+function hexByte(n) {
+  return Math.max(0, Math.min(255, n)).toString(16).padStart(2, '0');
+}
+function rgbToHex(r, g, b) {
+  return `#${hexByte(r)}${hexByte(g)}${hexByte(b)}`;
+}
+function rgbIntToHex(value) {
+  return rgbToHex((value >> 16) & 255, (value >> 8) & 255, value & 255);
+}
+function buildAnsi256Palette() {
+  const base = [
+    '#000000', '#cd0000', '#00cd00', '#cdcd00', '#0000ee', '#cd00cd', '#00cdcd', '#e5e5e5',
+    '#7f7f7f', '#ff0000', '#00ff00', '#ffff00', '#5c5cff', '#ff00ff', '#00ffff', '#ffffff',
+  ];
+  const palette = [...base];
+  const steps = [0, 95, 135, 175, 215, 255];
+  for (let r = 0; r < 6; r++) {
+    for (let g = 0; g < 6; g++) {
+      for (let b = 0; b < 6; b++) {
+        palette.push(rgbToHex(steps[r], steps[g], steps[b]));
+      }
+    }
+  }
+  for (let i = 0; i < 24; i++) {
+    const value = 8 + i * 10;
+    palette.push(rgbToHex(value, value, value));
+  }
+  return palette;
+}
+const ANSI_256_PALETTE = buildAnsi256Palette();
+function ansi256ToHex(index) {
+  return ANSI_256_PALETTE[index] ?? null;
+}
+function colorFromCell(cell, useBackground = false) {
+  const isDefault = useBackground ? cell.isBgDefault() : cell.isFgDefault();
+  if (isDefault) return null;
+  const isRgb = useBackground ? cell.isBgRGB() : cell.isFgRGB();
+  const isPalette = useBackground ? cell.isBgPalette() : cell.isFgPalette();
+  const value = useBackground ? cell.getBgColor() : cell.getFgColor();
+  if (isRgb) return rgbIntToHex(value);
+  if (isPalette) return ansi256ToHex(value);
+  return null;
+}
+function styleFromCell(cell) {
+  const inverse = Boolean(cell.isInverse());
+  const fg = inverse ? (colorFromCell(cell, true) ?? null) : colorFromCell(cell, false);
+  return {
+    fg,
+    bold: Boolean(cell.isBold()),
+    dim: Boolean(cell.isDim()),
   };
+}
+function styleToCss(style) {
   const parts = [];
-  if (style.fg && colors[style.fg]) parts.push(`color:${colors[style.fg]}`);
+  if (style.fg) parts.push(`color:${style.fg}`);
   if (style.bold) parts.push('font-weight:700');
   if (style.dim) parts.push('opacity:0.75');
   return parts.join(';');
 }
 function svgAttrsForStyle(style) {
-  const colors = {
-    red: '#ff6b6b',
-    green: '#51cf66',
-    yellow: '#ffd43b',
-    blue: '#74c0fc',
-    magenta: '#f783ff',
-    cyan: '#66d9e8',
-    gray: '#adb5bd',
-  };
   let attrs = '';
-  if (style.fg && colors[style.fg]) attrs += ` fill="${colors[style.fg]}"`;
+  if (style.fg) attrs += ` fill="${style.fg}"`;
   if (style.bold) attrs += ' font-weight="700"';
   if (style.dim) attrs += ' opacity="0.75"';
   return attrs;
 }
-function ensureRow(state, row, cols) {
-  while (state.lines.length <= row) {
-    state.lines.push(Array.from({ length: cols }, () => ({ ch: ' ', style: defaultStyle() })));
-  }
-  const line = state.lines[row];
-  while (line.length < cols) line.push({ ch: ' ', style: defaultStyle() });
+function hexToRgb(hex) {
+  const value = hex.replace(/^#/, '');
+  if (value.length !== 6) return null;
+  return {
+    r: parseInt(value.slice(0, 2), 16),
+    g: parseInt(value.slice(2, 4), 16),
+    b: parseInt(value.slice(4, 6), 16),
+  };
 }
-function writeFrameChar(state, ch, cols) {
-  ensureRow(state, state.cursorRow, cols);
-  state.lines[state.cursorRow][state.cursorCol] = { ch, style: cloneStyle(state.style) };
-  state.cursorCol = Math.min(cols - 1, state.cursorCol + 1);
+function styleToAnsi(style) {
+  const codes = [];
+  if (style.bold) codes.push(1);
+  if (style.dim) codes.push(2);
+  if (style.fg) {
+    const rgb = hexToRgb(style.fg);
+    if (rgb) codes.push(38, 2, rgb.r, rgb.g, rgb.b);
+  }
+  return codes.length ? `\x1b[${codes.join(';')}m` : '';
 }
 function applySgr(style, codes) {
-  for (const code of codes) {
+  for (let i = 0; i < codes.length; i++) {
+    const code = codes[i];
     if (code === 0) Object.assign(style, defaultStyle());
     else if (code === 1) style.bold = true;
     else if (code === 2) style.dim = true;
     else if (code === 22) {
       style.bold = false;
       style.dim = false;
-    } else if (code === 31) style.fg = 'red';
-    else if (code === 32) style.fg = 'green';
-    else if (code === 33) style.fg = 'yellow';
-    else if (code === 34) style.fg = 'blue';
-    else if (code === 35) style.fg = 'magenta';
-    else if (code === 36) style.fg = 'cyan';
-    else if (code === 90) style.fg = 'gray';
-    else if (code === 39) style.fg = null;
-  }
-}
-function applyFrameChunk(state, text, rows, cols) {
-  let i = 0;
-  while (i < text.length) {
-    if (text[i] === '\x1b' && text[i + 1] === '[') {
-      const sgrMatch = text.slice(i).match(/^\x1b\[([0-9;]*)m/);
-      if (sgrMatch) {
-        const codes = (sgrMatch[1] ? sgrMatch[1].split(';').map(Number) : [0]).filter((n) => !Number.isNaN(n));
-        applySgr(state.style, codes);
-        i += sgrMatch[0].length;
-        continue;
-      }
-      const csiMatch = text.slice(i).match(/^\x1b\[[0-9;?]*[A-Za-z]/);
-      if (csiMatch) {
-        i += csiMatch[0].length;
-        continue;
+    } else if (code === 39) {
+      style.fg = null;
+    } else if (code >= 30 && code <= 37) {
+      style.fg = ansi256ToHex(code - 30) ?? style.fg;
+    } else if (code >= 90 && code <= 97) {
+      style.fg = ansi256ToHex(code - 90 + 8) ?? style.fg;
+    } else if (code === 38) {
+      const mode = codes[i + 1];
+      if (mode === 2 && i + 4 < codes.length) {
+        style.fg = rgbToHex(codes[i + 2], codes[i + 3], codes[i + 4]);
+        i += 4;
+      } else if (mode === 5 && i + 2 < codes.length) {
+        style.fg = ansi256ToHex(codes[i + 2]);
+        i += 2;
       }
     }
-    const ch = text[i];
-    if (ch === '\r') {
-      state.cursorCol = 0;
-      i += 1;
-      continue;
-    }
-    if (ch === '\n') {
-      state.cursorRow += 1;
-      state.cursorCol = 0;
-      ensureRow(state, state.cursorRow, cols);
-      if (state.lines.length > rows) {
-        state.lines.shift();
-        state.cursorRow = Math.max(0, state.cursorRow - 1);
-      }
-      i += 1;
-      continue;
-    }
-    if (ch === '\b') {
-      state.cursorCol = Math.max(0, state.cursorCol - 1);
-      i += 1;
-      continue;
-    }
-    if (ch >= ' ' || ch === '\t') writeFrameChar(state, ch === '\t' ? ' ' : ch, cols);
-    i += 1;
   }
 }
 function frameSnapshotToHtmlLines(lines) {
   return lines.map((line) => {
     if (!Array.isArray(line)) return esc(String(line ?? ''));
-    const cells = line;
     let html = '';
     let currentCss = null;
     let chunk = '';
@@ -187,7 +193,7 @@ function frameSnapshotToHtmlLines(lines) {
       html += currentCss ? `<span style="${currentCss}">${escaped}</span>` : escaped;
       chunk = '';
     };
-    for (const cell of cells) {
+    for (const cell of line) {
       const css = styleToCss(cell.style ?? defaultStyle());
       if (css !== currentCss) {
         flush();
@@ -198,19 +204,6 @@ function frameSnapshotToHtmlLines(lines) {
     flush();
     return html.replace(/\s+$/g, '');
   });
-}
-function styleToAnsi(style) {
-  const codes = [];
-  if (style.bold) codes.push(1);
-  if (style.dim) codes.push(2);
-  if (style.fg === 'red') codes.push(31);
-  if (style.fg === 'green') codes.push(32);
-  if (style.fg === 'yellow') codes.push(33);
-  if (style.fg === 'blue') codes.push(34);
-  if (style.fg === 'magenta') codes.push(35);
-  if (style.fg === 'cyan') codes.push(36);
-  if (style.fg === 'gray') codes.push(90);
-  return codes.length ? `\x1b[${codes.join(';')}m` : '';
 }
 function frameSnapshotToAnsiLines(lines) {
   return lines.map((line) => {
@@ -228,22 +221,53 @@ function frameSnapshotToAnsiLines(lines) {
     return `${out}\x1b[0m`.replace(/\s+\x1b\[0m$/, '\x1b[0m');
   });
 }
-function padAnsiLine(line, width) {
-  const visible = stripAnsi(line);
-  return line + ' '.repeat(Math.max(0, width - visible.length));
+function fitAnsiLine(line, width) {
+  let out = '';
+  let visible = 0;
+  let i = 0;
+  while (i < line.length && visible < width) {
+    if (line[i] === '\x1b' && line[i + 1] === '[') {
+      const match = line.slice(i).match(/^\x1b\[[0-9;]*m/);
+      if (match) {
+        out += match[0];
+        i += match[0].length;
+        continue;
+      }
+    }
+    out += line[i];
+    visible += 1;
+    i += 1;
+  }
+  return `${out}\x1b[0m${' '.repeat(Math.max(0, width - visible))}`;
 }
-function buildWidgetAnsiLines(title, snapshot, width, rows) {
+function formatElapsed(ms) {
+  const totalSeconds = Math.max(0, ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
+  const wholeSeconds = Math.floor(totalSeconds);
+  const hours = Math.floor(wholeSeconds / 3600);
+  const minutes = Math.floor((wholeSeconds % 3600) / 60);
+  const seconds = wholeSeconds % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+function buildTopBorder(title, innerWidth, elapsedMs) {
+  const timer = ` ${formatElapsed(elapsedMs)}`;
+  const rawTitle = title ? ` ${title} ` : '';
+  const titleText = rawTitle.slice(0, Math.max(0, innerWidth - timer.length - 1));
+  const fill = '─'.repeat(Math.max(0, innerWidth - titleText.length - timer.length));
+  return `${titleText}${fill}${timer}`.padEnd(innerWidth, '─').slice(0, innerWidth);
+}
+function buildWidgetAnsiLines(title, snapshot, width, rows, elapsedMs = 0) {
   const accent = '\x1b[38;2;77;163;255m';
   const reset = '\x1b[0m';
-  const innerWidth = Math.max(10, width - 4);
-  const header = ` ${title} `;
-  const top = `${accent}┌${header}${'─'.repeat(Math.max(0, width - 2 - header.length))}┐${reset}`;
-  const bottom = `${accent}└${'─'.repeat(Math.max(0, width - 2))}┘${reset}`;
+  const innerWidth = Math.max(10, width - 2);
+  const top = `${accent}╭${buildTopBorder(title, innerWidth, elapsedMs)}╮${reset}`;
+  const bottom = `${accent}╰${'─'.repeat(innerWidth)}╯${reset}`;
   const bodySource = frameSnapshotToAnsiLines(snapshot).slice(-rows);
   const body = [];
   for (let i = 0; i < rows; i++) {
-    const line = padAnsiLine(bodySource[i] ?? '', innerWidth);
-    body.push(`${accent}│ ${reset}${line}${accent} │${reset}`);
+    const line = fitAnsiLine(bodySource[i] ?? '', innerWidth);
+    body.push(`${accent}│${reset}${line}${accent}│${reset}`);
   }
   return [top, ...body, bottom];
 }
@@ -279,12 +303,12 @@ function parseAnsiLineToSegments(line) {
 }
 async function ansiLinesToPng(lines, pngPath) {
   const fontSize = 18;
-  const charWidth = 10;
+  const charWidth = 10.8;
   const lineHeight = 24;
-  const padding = 14;
+  const padding = 18;
   const visibleWidth = Math.max(...lines.map((line) => stripAnsi(line).length), 1);
-  const width = padding * 2 + visibleWidth * charWidth;
-  const height = padding * 2 + lines.length * lineHeight;
+  const width = Math.ceil(padding * 2 + (visibleWidth + 1) * charWidth);
+  const height = Math.ceil(padding * 2 + lines.length * lineHeight);
   const background = '#111111';
   const defaultColor = '#dddddd';
   let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`;
@@ -330,30 +354,83 @@ function normalScreenPortion(inAltAtStart, chunk) {
   }
   return out;
 }
+function createXterm(cols, rows) {
+  return new Terminal({
+    cols,
+    rows,
+    scrollback: 10_000,
+    allowProposedApi: true,
+  });
+}
+function snapshotTerminal(term) {
+  const buffer = term.buffer.active;
+  const start = buffer.baseY;
+  const lines = [];
+  const scratchCell = buffer.getNullCell();
+  for (let y = 0; y < term.rows; y++) {
+    const row = [];
+    const line = buffer.getLine(start + y);
+    for (let x = 0; x < term.cols; x++) {
+      const cell = line?.getCell(x, scratchCell);
+      if (!cell) {
+        row.push({ ch: ' ', style: defaultStyle() });
+        continue;
+      }
+      if (cell.getWidth() === 0) continue;
+      row.push({
+        ch: cell.getChars() || ' ',
+        style: styleFromCell(cell),
+      });
+    }
+    lines.push(row);
+  }
+  return lines;
+}
 
 async function runPty(command, name) {
+  const cols = 100;
+  const rows = 15;
+  const startedAt = Date.now();
   const child = pty.spawn('/bin/bash', ['-lc', command], {
-    name: 'xterm-256color', cols: 100, rows: 15, cwd, env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
+    name: 'xterm-256color', cols, rows, cwd, env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
   });
+  const term = createXterm(cols, rows);
   const state = { lines: [], current: '' };
   let inAlt = false;
-  let ansiBuffer = '';
-  const frame = createFrameState();
+  let altBuffer = '';
+  let syncBuffer = '';
+  let inSyncRender = false;
+  let pendingWrites = Promise.resolve();
+  let lastCompletedSnapshot = snapshotTerminal(term);
   const snapshots = [];
   await new Promise((resolve) => {
     child.onData((chunk) => {
       const startedAlt = inAlt;
-      ansiBuffer = (ansiBuffer + chunk).slice(-256);
-      if (/\x1b\[\?1049h/.test(ansiBuffer)) inAlt = true;
-      if (/\x1b\[\?1049l/.test(ansiBuffer)) inAlt = false;
-      const clean = stripControlForFrame(chunk);
-      if (clean) applyFrameChunk(frame, clean, 15, 100);
-      snapshots.push(frame.lines.map((line) => line.map((cell) => ({ ...cell, style: { ...cell.style } }))));
+      const receivedAt = Date.now() - startedAt;
+      altBuffer = (altBuffer + chunk).slice(-256);
+      syncBuffer = (syncBuffer + chunk).slice(-256);
+      if (/\x1b\[\?1049h/.test(altBuffer)) inAlt = true;
+      if (/\x1b\[\?1049l/.test(altBuffer)) inAlt = false;
+      if (/\x1b\[\?2026h/.test(syncBuffer)) inSyncRender = true;
+      if (/\x1b\[\?2026l/.test(syncBuffer)) inSyncRender = false;
+      pendingWrites = pendingWrites.then(() => new Promise((resolveWrite) => {
+        term.write(chunk, () => {
+          const snapshot = snapshotTerminal(term);
+          if (!inSyncRender) lastCompletedSnapshot = snapshot;
+          snapshots.push({
+            elapsedMs: receivedAt,
+            lines: inSyncRender ? cloneSnapshot(lastCompletedSnapshot) : snapshot,
+          });
+          resolveWrite();
+        });
+      }));
       const visibleNormal = normalScreenPortion(startedAlt, chunk);
       if (visibleNormal) applyTranscriptChunk(state, stripAnsi(visibleNormal));
     });
     child.onExit(resolve);
   });
+  await pendingWrites;
+  term.dispose?.();
   const truncation = truncateHead(finalizeTranscript(state), DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
   const jsonPath = path.join(outDir, `${name}.json`);
   fs.writeFileSync(jsonPath, JSON.stringify({ command, snapshots, truncation }, null, 2));
@@ -386,13 +463,15 @@ async function renderGif(name, snapshots) {
   const pngPaths = [];
   const step = Math.max(1, Math.floor(snapshots.length / 12));
   for (let i = 0; i < snapshots.length; i += step) {
-    const lines = buildWidgetAnsiLines('Live terminal', snapshots[i], 84, 15);
+    const frame = snapshots[i];
+    const lines = buildWidgetAnsiLines('Live terminal', frame.lines, 84, 15, frame.elapsedMs);
     const pngPath = path.join(frameDir, `${String(pngPaths.length).padStart(3, '0')}.png`);
     await ansiLinesToPng(lines, pngPath);
     pngPaths.push(pngPath);
   }
   if (snapshots.length > 0 && (snapshots.length - 1) % step !== 0) {
-    const lines = buildWidgetAnsiLines('Live terminal', snapshots.at(-1) ?? [], 84, 15);
+    const frame = snapshots.at(-1) ?? { lines: [], elapsedMs: 0 };
+    const lines = buildWidgetAnsiLines('Live terminal', frame.lines, 84, 15, frame.elapsedMs);
     const pngPath = path.join(frameDir, `${String(pngPaths.length).padStart(3, '0')}.png`);
     await ansiLinesToPng(lines, pngPath);
     pngPaths.push(pngPath);
@@ -430,7 +509,7 @@ for (const [name, command] of cases) {
   const fixture = readFixtureSource(command);
   const ptyResult = await runPty(command, name);
   const builtin = await runBuiltin(command);
-  const media = await renderGif(name, ptyResult.snapshots.length ? ptyResult.snapshots : [['(no live frames)']]);
+  const media = await renderGif(name, ptyResult.snapshots.length ? ptyResult.snapshots : [[{ ch: '(no live frames)', style: defaultStyle() }]]);
   reportRows.push({ name, command, fixture, pty: ptyResult, builtin, media });
 }
 

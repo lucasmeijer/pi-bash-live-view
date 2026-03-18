@@ -70,11 +70,13 @@ Inside pi:
 ## Important implementation notes
 
 - GIF/frame generation is intended to be close to production widget rendering.
-- The report pipeline now rasterizes ANSI-colored widget lines directly into PNGs instead of screenshotting HTML for GIF frames.
+- The report pipeline now uses `xterm-headless` to derive terminal frame snapshots before converting widget lines into PNGs/GIFs.
+- The report rasterizer still converts ANSI-colored widget lines directly into PNGs instead of screenshotting HTML for GIF frames.
+- `xterm-headless` currently needs a small `globalThis.window = {}` shim in this repo's Node report runner before requiring it.
 - The final browser screenshot is still used for verifying the master HTML review page.
 
 ## Known current gaps
 
-- `xterm-headless` is not yet fully integrated for true terminal-state transcript extraction.
+- `xterm-headless` is still not fully integrated for true terminal-state transcript extraction.
 - The live widget implementation is still simplified compared to the target in `PLAN.md`.
 - End-to-end pi-driven validation still needs more work.
