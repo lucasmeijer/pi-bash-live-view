@@ -466,6 +466,36 @@ Tracking may be implemented through:
 
 This tracking is mainly internal/test-only.
 
+### E3b. Synchronized rendering / DECSET 2026 handling
+
+Explicitly support synchronized terminal updates so the live widget does not snapshot half-painted frames.
+
+Treat the synchronized rendering control sequences as first-class state in the PTY/xterm session:
+
+- begin synchronized update: `CSI ? 2026 h`
+- end synchronized update: `CSI ? 2026 l`
+
+Requirements:
+
+- maintain an internal boolean like `inSynchronizedRender`
+- when a synchronized-update begin sequence has been seen without a matching end, the widget must **not** publish a new snapshot derived from the partially updated xterm state
+- while inside the synchronized region, continue feeding bytes into xterm so its state stays current, but keep using the **previous completed snapshot** for UI rendering
+- when the synchronized-update end sequence arrives, immediately mark the session/widget dirty and call `tui.requestRender()` so pi can render the newly completed frame
+
+Important rendering contract:
+
+- pi asks the widget to render
+- widget attempts to snapshot the **very latest** xterm state
+- if the session is currently inside a synchronized-update lock, widget must return the **last completed snapshot** instead of a fresh partial one
+- this is specifically to avoid flicker and visible half-painted frames
+
+Implementation notes:
+
+- parsing should work even if begin/end sequences arrive split across PTY chunks
+- keep the parser/state tracking separate from final transcript extraction
+- synchronized rendering affects **live widget snapshot publication**, not final textual transcript generation
+- add comments explaining that this is a flicker-avoidance mechanism, not an output-filtering mechanism
+
 ### E4. Scrollback length
 
 Configure xterm scrollback to be very large.
@@ -637,6 +667,28 @@ Render-time model:
 
 This matches the chosen “snapshot on render” design.
 
+### H4a. Last-completed-snapshot cache
+
+To support synchronized rendering without flicker, each live terminal widget should maintain:
+
+- `lastCompletedSnapshot`
+- `lastCompletedSnapshotSize`
+- `inSynchronizedRender`
+
+Rendering behavior:
+
+- if `inSynchronizedRender === false`, render may grab a fresh snapshot from xterm and replace `lastCompletedSnapshot`
+- if `inSynchronizedRender === true`, render must **not** publish a newly grabbed partial frame; it must render `lastCompletedSnapshot`
+- if no completed snapshot exists yet and synchronized mode is already active, render an empty/default terminal body inside the border rather than a half-painted frame
+
+Update behavior:
+
+- PTY data still flows into xterm immediately
+- begin-sync sequence flips `inSynchronizedRender = true`
+- end-sync sequence flips it back to `false` and triggers `tui.requestRender()` so the next render publishes the newly completed state
+
+This cache is central to the no-flicker guarantee.
+
 ## H5. Border and header
 
 Render a bordered terminal frame with:
@@ -660,6 +712,26 @@ Plan:
 If direct color cell extraction is awkward, adapt to the highest-fidelity rendering path available from `xterm-headless` + pi-tui.
 
 Document any color limitations encountered.
+
+### H6a. Flicker avoidance policy
+
+A core UX requirement is: **do not flicker**.
+
+Concretely:
+
+- never publish partial terminal frames while an application is inside a synchronized rendering region
+- favor slightly stale-but-complete frames over partially updated frames
+- when synchronized rendering is not active, always try to render from the freshest xterm state available at render time
+
+The intended behavior is:
+
+1. PTY writes arrive and update xterm immediately
+2. pi later asks the widget to render
+3. widget grabs the freshest xterm state it can
+4. if synchronized rendering is currently active, widget reuses the prior completed snapshot
+5. when the synchronized end sequence arrives, widget requests a new render so pi can display the completed update promptly
+
+This should be called out in source comments anywhere snapshot caching logic is implemented.
 
 ---
 
@@ -750,6 +822,8 @@ Recommended test config:
 
 Create controlled programs that alter behavior based on whether they have a PTY, just like real tools.
 
+At least one fixture must explicitly exercise synchronized rendering begin/end behavior (`CSI ? 2026 h` / `CSI ? 2026 l`) so we can verify that the widget does not capture or publish half-painted frames.
+
 Required fixtures:
 
 ### 1. `spill`
@@ -790,6 +864,21 @@ This validates:
 
 - alt-screen exclusion from final transcript
 - post-alt-screen normal output retention
+
+### 4. `synchronized-render`
+
+Purpose:
+
+- emit `CSI ? 2026 h`
+- perform multiple visible screen updates that would look torn/flickery if captured mid-flight
+- emit `CSI ? 2026 l`
+- optionally repeat this a few times
+
+This validates:
+
+- the widget does not publish intermediate frames during synchronized rendering
+- the widget publishes the updated frame after the end sequence
+- render-time snapshotting plus cached completed-frame logic works as intended
 
 Optional additional fixture if needed:
 
@@ -924,6 +1013,11 @@ Implementation is done when all of the following are true.
 - Elapsed time is visible in the border/header.
 - Widget preserves terminal colors.
 - Widget disappears automatically on process exit.
+- Widget rendering must honor synchronized terminal updates (`DECSET/DECRST 2026`) to avoid flicker:
+  - do not publish new snapshots while synchronized rendering is active
+  - continue showing the last completed snapshot instead
+  - request a render when the synchronized-render end sequence arrives
+- Synchronized-rendering test coverage exists and proves there are no half-painted snapshots during `CSI ? 2026 h` / `CSI ? 2026 l` regions.
 
 ## Final textual result behavior
 

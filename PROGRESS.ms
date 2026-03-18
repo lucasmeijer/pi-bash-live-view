@@ -1,0 +1,1 @@
+- very basic inital scaffolding was setup, and a git repo was created
