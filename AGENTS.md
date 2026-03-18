@@ -70,14 +70,16 @@ Inside pi:
 
 ## Important implementation notes
 
-- The live widget and the report/test pipeline now share the same reusable `xterm-headless`-backed renderer in `src/live-widget-core.js`.
+- The live widget and the report/test pipeline now share the same reusable `xterm-headless`-backed terminal emulator in `src/terminal-emulator.js`.
+- That shared component now exposes terminal-emulator-flavored APIs like `consumeProcessStdout()`, `getViewportAsAnsiLines()`, and `getStrippedTextIncludingEntireScrollback()`.
+- pi TUI components render `string[]`, so the live widget currently converts xterm viewport state into ANSI-colored lines instead of drawing raw terminal cells directly.
 - GIF/frame generation is intended to be close to production widget rendering.
 - The report rasterizer still converts ANSI-colored widget lines directly into PNGs/GIFs instead of screenshotting HTML for GIF frames.
-- `xterm-headless` currently needs a small `globalThis.window = {}` shim before requiring it; the shared renderer handles that centrally.
+- `xterm-headless` currently needs a small `globalThis.window = {}` shim before requiring it; `src/terminal-emulator.js` handles that centrally.
 - The final browser screenshot is still used for verifying the master HTML review page.
 
 ## Known current gaps
 
 - transcript fidelity is still simplified; it is not yet true normal-screen + scrollback extraction from `xterm-headless` state
-- the shared renderer still outputs ANSI widget lines rather than a full production custom pi TUI cell renderer
+- the shared terminal emulator still returns ANSI viewport lines because pi's public TUI component API is string-based
 - end-to-end pi-driven validation still needs more work

@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { createLiveWidgetRenderer } from "./src/live-widget-core.js";
+import { createTerminalEmulator } from "./src/terminal-emulator.js";
 
 const CONFIG = loadConfig();
 const WIDGET_PREFIX = "bash-pty/live/";
@@ -19,7 +19,7 @@ type Config = {
   debug: boolean;
 };
 
-type LiveWidgetRenderer = ReturnType<typeof createLiveWidgetRenderer>;
+type TerminalEmulator = ReturnType<typeof createTerminalEmulator>;
 
 type LiveSession = {
   id: string;
@@ -30,7 +30,7 @@ type LiveSession = {
   visible: boolean;
   disposed: boolean;
   timer?: NodeJS.Timeout;
-  renderer: LiveWidgetRenderer;
+  terminalEmulator: TerminalEmulator;
   requestRender?: () => void;
 };
 
@@ -101,7 +101,7 @@ function makeWidgetFactory(session: LiveSession) {
     return {
       invalidate() {},
       render(width: number) {
-        return session.renderer.getRenderableAnsiLines({
+        return session.terminalEmulator.getViewportAsAnsiLines({
           width,
           rows: session.rows,
           elapsedMs: Date.now() - session.startedAt,
@@ -123,10 +123,10 @@ function hideWidget(ctx: ExtensionContext | null, session: LiveSession) {
 }
 
 async function executePty(toolCallId: string, params: { command: string; timeout?: number }, signal: AbortSignal, ctx: ExtensionContext) {
-  const shellConfig = getShellConfig(ctx.cwd);
+  const shellConfig = getShellConfig();
   const cols = CONFIG.testWidth;
   const rows = CONFIG.widgetHeight;
-  const renderer = createLiveWidgetRenderer({ cols, rows, scrollback: CONFIG.scrollbackLines });
+  const terminalEmulator = createTerminalEmulator({ cols, rows, scrollback: CONFIG.scrollbackLines });
   const session: LiveSession = {
     id: toolCallId,
     command: params.command,
@@ -135,10 +135,10 @@ async function executePty(toolCallId: string, params: { command: string; timeout
     rows,
     visible: false,
     disposed: false,
-    renderer,
+    terminalEmulator,
   };
 
-  const unsubscribe = renderer.subscribe(() => {
+  const unsubscribe = terminalEmulator.subscribe(() => {
     session.requestRender?.();
   });
 
@@ -175,21 +175,21 @@ async function executePty(toolCallId: string, params: { command: string; timeout
   const exit = await new Promise<{ exitCode: number | null }>((resolve) => {
     child.onData((chunk) => {
       rawChunkCount += 1;
-      void renderer.push(chunk, { elapsedMs: Date.now() - session.startedAt });
+      void terminalEmulator.consumeProcessStdout(chunk, { elapsedMs: Date.now() - session.startedAt });
     });
     child.onExit((event) => resolve({ exitCode: event.exitCode }));
   });
 
-  await renderer.whenIdle();
+  await terminalEmulator.whenIdle();
   if (timeoutHandle) clearTimeout(timeoutHandle);
   if (session.timer) clearTimeout(session.timer);
   session.disposed = true;
   hideWidget(ctx, session);
   unsubscribe();
 
-  const fullText = renderer.finalizeText();
-  renderer.dispose();
-  const truncation = truncateHead(fullText, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
+  const fullText = terminalEmulator.getStrippedTextIncludingEntireScrollback();
+  terminalEmulator.dispose();
+  const truncation = truncateHead(fullText, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
   return {
     content: [{ type: "text" as const, text: truncation.content }],
     details: {

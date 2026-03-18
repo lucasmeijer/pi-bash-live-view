@@ -262,7 +262,7 @@ export function buildWidgetAnsiLines({ title = 'Live terminal', snapshot, width,
   return [top, ...body, bottom];
 }
 
-export function createLiveWidgetRenderer({ cols, rows, scrollback = 10_000, title = 'Live terminal' }) {
+export function createTerminalEmulator({ cols, rows, scrollback = 10_000, title = 'Live terminal' }) {
   const term = createXterm(cols, rows, scrollback);
   const transcript = { lines: [], current: '' };
   const listeners = new Set();
@@ -278,7 +278,7 @@ export function createLiveWidgetRenderer({ cols, rows, scrollback = 10_000, titl
     for (const listener of listeners) listener(payload);
   }
 
-  async function push(chunk, { elapsedMs = lastElapsedMs } = {}) {
+  async function consumeProcessStdout(chunk, { elapsedMs = lastElapsedMs } = {}) {
     const startedAlt = inAltScreen;
     lastElapsedMs = elapsedMs;
     modeBuffer = (modeBuffer + chunk).slice(-256);
@@ -292,10 +292,10 @@ export function createLiveWidgetRenderer({ cols, rows, scrollback = 10_000, titl
       term.write(chunk, () => {
         latestSnapshot = snapshotTerminal(term);
         if (!inSyncRender) lastCompletedSnapshot = cloneSnapshot(latestSnapshot);
-        const renderableSnapshot = cloneSnapshot(inSyncRender ? lastCompletedSnapshot : latestSnapshot);
+        const viewportSnapshot = cloneSnapshot(inSyncRender ? lastCompletedSnapshot : latestSnapshot);
         const payload = {
           elapsedMs: lastElapsedMs,
-          snapshot: renderableSnapshot,
+          snapshot: viewportSnapshot,
           inAltScreen,
           inSyncRender,
         };
@@ -306,11 +306,30 @@ export function createLiveWidgetRenderer({ cols, rows, scrollback = 10_000, titl
     return writeChain;
   }
 
+  function getViewportSnapshot() {
+    return cloneSnapshot(inSyncRender ? lastCompletedSnapshot : latestSnapshot);
+  }
+
+  function getViewportAsAnsiLines({ width, rows: overrideRows = rows, elapsedMs = lastElapsedMs, title: overrideTitle = title, accentColor } = {}) {
+    return buildWidgetAnsiLines({
+      title: overrideTitle,
+      snapshot: getViewportSnapshot(),
+      width,
+      rows: overrideRows,
+      elapsedMs,
+      accentColor,
+    });
+  }
+
+  function getStrippedTextIncludingEntireScrollback() {
+    return finalizeTranscript(transcript);
+  }
+
   return {
     cols,
     rows,
     title,
-    push,
+    consumeProcessStdout,
     whenIdle() {
       return writeChain;
     },
@@ -321,22 +340,9 @@ export function createLiveWidgetRenderer({ cols, rows, scrollback = 10_000, titl
     getState() {
       return { inAltScreen, inSyncRender, elapsedMs: lastElapsedMs };
     },
-    getRenderableSnapshot() {
-      return cloneSnapshot(inSyncRender ? lastCompletedSnapshot : latestSnapshot);
-    },
-    getRenderableAnsiLines({ width, rows: overrideRows = rows, elapsedMs = lastElapsedMs, title: overrideTitle = title, accentColor } = {}) {
-      return buildWidgetAnsiLines({
-        title: overrideTitle,
-        snapshot: this.getRenderableSnapshot(),
-        width,
-        rows: overrideRows,
-        elapsedMs,
-        accentColor,
-      });
-    },
-    finalizeText() {
-      return finalizeTranscript(transcript);
-    },
+    getViewportSnapshot,
+    getViewportAsAnsiLines,
+    getStrippedTextIncludingEntireScrollback,
     dispose() {
       term.dispose?.();
       listeners.clear();

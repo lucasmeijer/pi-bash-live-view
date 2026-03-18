@@ -7,7 +7,7 @@ import { chromium } from 'playwright';
 import GIFEncoder from 'gifencoder';
 import sharp from 'sharp';
 import { PNG } from 'pngjs';
-import { buildWidgetAnsiLines, createLiveWidgetRenderer } from '../src/live-widget-core.js';
+import { buildWidgetAnsiLines, createTerminalEmulator } from '../src/terminal-emulator.js';
 
 const cwd = process.cwd();
 const outDir = path.join(cwd, 'artifacts');
@@ -130,19 +130,19 @@ async function runPty(command, name) {
   const child = pty.spawn('/bin/bash', ['-lc', command], {
     name: 'xterm-256color', cols, rows, cwd, env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
   });
-  const renderer = createLiveWidgetRenderer({ cols, rows, scrollback: 10_000 });
+  const terminalEmulator = createTerminalEmulator({ cols, rows, scrollback: 10_000 });
   const snapshots = [];
   await new Promise((resolve) => {
     child.onData((chunk) => {
-      void renderer.push(chunk, { elapsedMs: Date.now() - startedAt }).then((frame) => {
+      void terminalEmulator.consumeProcessStdout(chunk, { elapsedMs: Date.now() - startedAt }).then((frame) => {
         snapshots.push(frame);
       });
     });
     child.onExit(resolve);
   });
-  await renderer.whenIdle();
-  const truncation = truncateHead(renderer.finalizeText(), DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
-  renderer.dispose();
+  await terminalEmulator.whenIdle();
+  const truncation = truncateHead(terminalEmulator.getStrippedTextIncludingEntireScrollback(), DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
+  terminalEmulator.dispose();
   const jsonPath = path.join(outDir, `${name}.json`);
   fs.writeFileSync(jsonPath, JSON.stringify({ command, snapshots, truncation }, null, 2));
   return { command, snapshots, truncation, jsonPath };

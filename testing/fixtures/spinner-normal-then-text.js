@@ -18,4 +18,4 @@ const timer = setInterval(() => {
 setTimeout(() => {
   clearInterval(timer);
   process.stdout.write(`\r${color(ansi.green, 'spinner done')}\n${color(ansi.yellow, 'final line one')}\n${color(ansi.magenta, 'final line two')}\n`);
-}, 1200);
+}, 10200);

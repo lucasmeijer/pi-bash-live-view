@@ -32,8 +32,9 @@ Implemented now:
 - delayed live widget scaffold
 - `/bash-pty` slash command
 - config loading from global/project JSON
-- a shared reusable renderer in `src/live-widget-core.js` used by both the live widget and the report/test pipeline
-- `xterm-headless`-backed PTY feeding, snapshotting, synchronized-render snapshot locking, and ANSI widget-line generation through that shared renderer
+- a shared reusable terminal emulator in `src/terminal-emulator.js` used by both the live widget and the report/test pipeline
+- `xterm-headless`-backed PTY feeding, snapshotting, synchronized-render snapshot locking, viewport-to-ANSI conversion, and stripped-text extraction through that shared terminal emulator
+- the shared terminal emulator API now uses terminal-emulator-flavored names like `consumeProcessStdout()`, `getViewportAsAnsiLines()`, and `getStrippedTextIncludingEntireScrollback()`
 - fixture-based test/report pipeline
 - master HTML report generation with GIFs and browser screenshot verification
 - a visual explainer artifact at `artifacts/reusable-live-widget-api.html`
@@ -41,7 +42,7 @@ Implemented now:
 
 Still missing or intentionally simplified versus this plan:
 - transcript extraction is still simplified, not true normal-screen + scrollback extraction from xterm state
-- widget output still flows through shared ANSI widget lines rather than a full production custom TUI component with true cell/color fidelity
+- pi's public TUI component API is string-based, so widget output currently flows through shared ANSI widget lines rather than a lower-level cell drawing API
 - no full end-to-end pi-driven validation yet
 - no true production-quality truncation/temp-file parity yet
 
@@ -737,6 +738,12 @@ Plan:
 - snapshot xterm buffer cell data at render time
 - translate cell colors/attrs into pi-tui renderable ANSI/styled text lines
 - maintain the terminal viewport area inside the border
+
+Important clarification from pi's public TUI API:
+
+- custom components render via `render(width): string[]`
+- there is no documented public raw-cell drawing API for extensions
+- so our practical target is: **xterm cell state internally, ANSI/styled lines externally**
 
 If direct color cell extraction is awkward, adapt to the highest-fidelity rendering path available from `xterm-headless` + pi-tui.
 
