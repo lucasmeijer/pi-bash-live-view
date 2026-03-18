@@ -39,6 +39,7 @@
 - end-to-end pi-driven override validation still needs refinement
 - built-in bash parity for truncation/temp-file behavior is still incomplete
 - multi-widget stacking/order behavior has not been proven with dedicated e2e coverage
+- the normal-screen transcript splitter still uses chunk-local alt-screen stripping logic, so true split-chunk alt-screen transcript fidelity remains incomplete even though mode state tracking is now streaming/parser-based
 
 ## Candidate follow-up tasks
 
@@ -49,4 +50,6 @@
 5. add explicit concurrent PTY session tests for stacking, delay, cleanup, and deterministic start-order behavior
 6. add real end-to-end pi-driven tests for the overridden `bash` tool and `/bash-pty`
 7. make the report call out expected PTY vs built-in differences more explicitly per case
+8. improve the rasterizer so the test artifact renderer matches pi theme/border styling more closely
+Y vs built-in differences more explicitly per case
 8. improve the rasterizer so the test artifact renderer matches pi theme/border styling more closely

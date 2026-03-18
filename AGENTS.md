@@ -39,7 +39,7 @@ This currently:
 npm test
 ```
 
-Note: the current repo has a test script placeholder, but most verification currently happens through `npm run report`.
+Tests now run via Node's built-in test runner against files in `testing/*.test.mjs`. Report generation is still useful for visual/manual verification through `npm run report`.
 
 ### Inspect the generated report
 

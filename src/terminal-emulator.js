@@ -228,6 +228,73 @@ function fitAnsiLine(line, width) {
   return `${out}\x1b[0m${' '.repeat(Math.max(0, width - visible))}`;
 }
 
+function createDecPrivateModeTracker(onModeChange) {
+  let state = 'ground';
+  let privateMarker = false;
+  let params = '';
+
+  function reset() {
+    state = 'ground';
+    privateMarker = false;
+    params = '';
+  }
+
+  function finalize(finalByte) {
+    if (!privateMarker || (finalByte !== 'h' && finalByte !== 'l')) {
+      reset();
+      return;
+    }
+    const enabled = finalByte === 'h';
+    for (const part of params.split(';')) {
+      if (!part) continue;
+      const mode = Number(part);
+      if (!Number.isInteger(mode)) continue;
+      onModeChange(mode, enabled);
+    }
+    reset();
+  }
+
+  return {
+    push(text) {
+      for (const ch of text) {
+        if (state === 'ground') {
+          if (ch === '\x1b') state = 'escape';
+          continue;
+        }
+        if (state === 'escape') {
+          if (ch === '[') {
+            state = 'csi';
+            privateMarker = false;
+            params = '';
+            continue;
+          }
+          state = ch === '\x1b' ? 'escape' : 'ground';
+          continue;
+        }
+        if (state === 'csi') {
+          if (ch === '?') {
+            if (params.length === 0 && !privateMarker) {
+              privateMarker = true;
+              continue;
+            }
+            reset();
+            continue;
+          }
+          if ((ch >= '0' && ch <= '9') || ch === ';') {
+            params += ch;
+            continue;
+          }
+          if (ch >= '@' && ch <= '~') {
+            finalize(ch);
+            continue;
+          }
+          reset();
+        }
+      }
+    },
+  };
+}
+
 export function formatElapsed(ms) {
   const totalSeconds = Math.max(0, ms / 1000);
   if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
@@ -266,13 +333,21 @@ export function createTerminalEmulator({ cols, rows, scrollback = 10_000, title 
   const term = createXterm(cols, rows, scrollback);
   const transcript = { lines: [], current: '' };
   const listeners = new Set();
-  let modeBuffer = '';
   let writeChain = Promise.resolve();
   let inAltScreen = false;
   let inSyncRender = false;
   let lastCompletedSnapshot = snapshotTerminal(term);
   let latestSnapshot = cloneSnapshot(lastCompletedSnapshot);
   let lastElapsedMs = 0;
+  const modeTracker = createDecPrivateModeTracker((mode, enabled) => {
+    if (mode === 2026) {
+      inSyncRender = enabled;
+      return;
+    }
+    if (mode === 1049 || mode === 1047 || mode === 47) {
+      inAltScreen = enabled;
+    }
+  });
 
   function emitUpdate(payload) {
     for (const listener of listeners) listener(payload);
@@ -281,21 +356,17 @@ export function createTerminalEmulator({ cols, rows, scrollback = 10_000, title 
   async function consumeProcessStdout(chunk, { elapsedMs = lastElapsedMs } = {}) {
     const startedAlt = inAltScreen;
     lastElapsedMs = elapsedMs;
-    modeBuffer = (modeBuffer + chunk).slice(-256);
-    if (/\x1b\[\?(?:1049|1047|47)h/.test(modeBuffer)) inAltScreen = true;
-    if (/\x1b\[\?(?:1049|1047|47)l/.test(modeBuffer)) inAltScreen = false;
-    if (/\x1b\[\?2026h/.test(modeBuffer)) inSyncRender = true;
-    if (/\x1b\[\?2026l/.test(modeBuffer)) inSyncRender = false;
+    modeTracker.push(chunk);
     const visibleNormal = normalScreenPortion(startedAlt, chunk);
     if (visibleNormal) applyTranscriptChunk(transcript, stripAnsi(visibleNormal));
     writeChain = writeChain.then(() => new Promise((resolve) => {
       term.write(chunk, () => {
         latestSnapshot = snapshotTerminal(term);
+        const renderableSnapshot = inSyncRender ? lastCompletedSnapshot : latestSnapshot;
         if (!inSyncRender) lastCompletedSnapshot = cloneSnapshot(latestSnapshot);
-        const viewportSnapshot = cloneSnapshot(inSyncRender ? lastCompletedSnapshot : latestSnapshot);
         const payload = {
           elapsedMs: lastElapsedMs,
-          snapshot: viewportSnapshot,
+          snapshot: cloneSnapshot(renderableSnapshot),
           inAltScreen,
           inSyncRender,
         };
