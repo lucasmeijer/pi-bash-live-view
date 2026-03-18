@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { createRequire } from 'node:module';
 import { createBashTool, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from '@mariozechner/pi-coding-agent';
 import pty from 'node-pty';
@@ -121,6 +120,7 @@ function normalScreenPortion(inAltAtStart, chunk) {
   }
   return out;
 }
+
 async function runPty(command, name) {
   const child = pty.spawn('/bin/bash', ['-lc', command], {
     name: 'xterm-256color', cols: 100, rows: 15, cwd, env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
@@ -149,25 +149,47 @@ async function runPty(command, name) {
   fs.writeFileSync(jsonPath, JSON.stringify({ command, snapshots, truncation }, null, 2));
   return { command, snapshots, truncation, jsonPath };
 }
+
 async function runBuiltin(command) {
   const tool = createBashTool(cwd);
   return tool.execute('report', { command }, new AbortController().signal, () => {});
 }
+
 function esc(s) {
   return s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 }
+
+function readFixtureSource(command) {
+  const match = command.match(/node\s+(testing\/fixtures\/[^\s]+)/);
+  if (!match) return null;
+  const filePath = path.join(cwd, match[1]);
+  return {
+    path: match[1],
+    source: fs.readFileSync(filePath, 'utf8'),
+  };
+}
+
 function renderTerminalHtml(title, lines) {
   return `<!doctype html><html><body style="margin:0;background:#111;color:#ddd;font-family:Menlo,monospace"><div style="width:840px;background:#111;padding:12px"><div style="border:1px solid #4da3ff;border-radius:8px;overflow:hidden"><div style="padding:6px 10px;border-bottom:1px solid #4da3ff;color:#7ab7ff">${esc(title)}</div><pre style="margin:0;padding:10px;min-height:270px">${esc(lines.join('\n'))}</pre></div></div></body></html>`;
 }
+
 async function renderGif(name, snapshots) {
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 864, height: 340 } });
   const frameDir = path.join(outDir, `${name}-frames`);
+  fs.rmSync(frameDir, { recursive: true, force: true });
   fs.mkdirSync(frameDir, { recursive: true });
   const pngPaths = [];
-  for (let i = 0; i < snapshots.length; i += Math.max(1, Math.floor(snapshots.length / 12))) {
+  const step = Math.max(1, Math.floor(snapshots.length / 12));
+  for (let i = 0; i < snapshots.length; i += step) {
     const lines = snapshots[i];
     await page.setContent(renderTerminalHtml('Live terminal', lines));
+    const pngPath = path.join(frameDir, `${String(pngPaths.length).padStart(3, '0')}.png`);
+    await page.screenshot({ path: pngPath });
+    pngPaths.push(pngPath);
+  }
+  if (snapshots.length > 0 && (snapshots.length - 1) % step !== 0) {
+    await page.setContent(renderTerminalHtml('Live terminal', snapshots.at(-1) ?? []));
     const pngPath = path.join(frameDir, `${String(pngPaths.length).padStart(3, '0')}.png`);
     await page.screenshot({ path: pngPath });
     pngPaths.push(pngPath);
@@ -203,19 +225,27 @@ const cases = [
 
 const reportRows = [];
 for (const [name, command] of cases) {
+  const fixture = readFixtureSource(command);
   const ptyResult = await runPty(command, name);
   const builtin = await runBuiltin(command);
   const media = await renderGif(name, ptyResult.snapshots.length ? ptyResult.snapshots : [['(no live frames)']]);
-  reportRows.push({ name, command, pty: ptyResult, builtin, media });
+  reportRows.push({ name, command, fixture, pty: ptyResult, builtin, media });
 }
 
 const html = `<!doctype html><html><head><meta charset="utf-8"><title>bash-pty report</title><style>
-body{font-family:system-ui,sans-serif;background:#111;color:#eee;padding:24px} pre{white-space:pre-wrap;background:#1b1b1b;padding:12px;border-radius:8px} .case{border:1px solid #333;padding:16px;border-radius:12px;margin-bottom:20px} img{max-width:100%;border-radius:8px;border:1px solid #333} .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+body{font-family:system-ui,sans-serif;background:#111;color:#eee;padding:24px}
+pre{white-space:pre-wrap;background:#1b1b1b;padding:12px;border-radius:8px;overflow:auto}
+code{background:#1b1b1b;padding:2px 6px;border-radius:6px}
+.case{border:1px solid #333;padding:16px;border-radius:12px;margin-bottom:20px}
+img{max-width:100%;border-radius:8px;border:1px solid #333}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 a{color:#8ecaff}
-</style></head><body><h1>bash-pty master report</h1>${reportRows.map((row)=>`
+.meta{color:#aaa;font-size:14px}
+</style></head><body><h1>bash-pty master report</h1><p class="meta">Rerun everything with <code>npm run report</code>.</p>${reportRows.map((row)=>`
 <div class="case">
 <h2>${esc(row.name)}</h2>
 <p><code>${esc(row.command)}</code></p>
+${row.fixture ? `<details><summary>Fixture source: <code>${esc(row.fixture.path)}</code></summary><pre>${esc(row.fixture.source)}</pre></details>` : ''}
 <p><img src="${path.basename(row.media.gifPath)}"></p>
 <p>Sample frames: ${row.media.pngPaths.map((p)=>`<a href="${path.relative(outDir,p)}">${path.basename(p)}</a>`).join(' ')}</p>
 <div class="grid">
@@ -223,6 +253,7 @@ a{color:#8ecaff}
 <div><h3>Built-in final output</h3><pre>${esc((row.builtin.content?.[0]?.text) || '')}</pre></div>
 </div>
 </div>`).join('')}</body></html>`;
+
 const reportPath = path.join(outDir, 'master-report.html');
 fs.writeFileSync(reportPath, html);
 const browser = await chromium.launch();
