@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { createRequire } from 'node:module';
 import { createBashTool, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from '@mariozechner/pi-coding-agent';
 import pty from 'node-pty';
 import stripAnsi from 'strip-ansi';
@@ -11,18 +12,43 @@ import { PNG } from 'pngjs';
 const cwd = process.cwd();
 const outDir = path.join(cwd, 'artifacts');
 fs.mkdirSync(outDir, { recursive: true });
+const require = createRequire(import.meta.url);
+
+function ensureSpawnHelperExecutable() {
+  try {
+    const base = path.dirname(require.resolve('node-pty/package.json'));
+    for (const helper of [
+      path.join(base, 'prebuilds', 'darwin-arm64', 'spawn-helper'),
+      path.join(base, 'prebuilds', 'darwin-x64', 'spawn-helper'),
+    ]) {
+      if (fs.existsSync(helper)) fs.chmodSync(helper, 0o755);
+    }
+  } catch (error) {
+    console.warn('[bash-pty report] spawn-helper chmod failed', error);
+  }
+}
+
+ensureSpawnHelperExecutable();
 
 function sanitizeOutput(text) {
   return stripAnsi(text).replace(/\r/g, '').replace(/\u0000/g, '');
 }
 function applyTranscriptChunk(state, text) {
   for (const ch of text) {
-    if (ch === '\r') state.current = '';
-    else if (ch === '\n') {
+    if (state.pendingCR && ch !== '\n') state.current = '';
+    if (ch === '\r') {
+      state.pendingCR = true;
+      continue;
+    }
+    if (ch === '\n') {
       state.lines.push(state.current);
       state.current = '';
-    } else if (ch === '\b') state.current = state.current.slice(0, -1);
+      state.pendingCR = false;
+      continue;
+    }
+    if (ch === '\b') state.current = state.current.slice(0, -1);
     else if (ch >= ' ' || ch === '\t') state.current += ch;
+    state.pendingCR = false;
   }
 }
 function finalizeTranscript(state) {
@@ -33,6 +59,33 @@ function finalizeTranscript(state) {
 }
 function stripControlForFrame(text) {
   return sanitizeOutput(text).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+}
+function normalScreenPortion(inAltAtStart, chunk) {
+  const enter = /\x1b\[\?(?:1049|1047|47)h/g;
+  const exit = /\x1b\[\?(?:1049|1047|47)l/g;
+  let out = '';
+  let index = 0;
+  let inAlt = inAltAtStart;
+  while (index < chunk.length) {
+    if (inAlt) {
+      exit.lastIndex = index;
+      const match = exit.exec(chunk);
+      if (!match) break;
+      index = match.index + match[0].length;
+      inAlt = false;
+      continue;
+    }
+    enter.lastIndex = index;
+    const match = enter.exec(chunk);
+    if (!match) {
+      out += chunk.slice(index);
+      break;
+    }
+    out += chunk.slice(index, match.index);
+    index = match.index + match[0].length;
+    inAlt = true;
+  }
+  return out;
 }
 async function runPty(command, name) {
   const child = pty.spawn('/bin/bash', ['-lc', command], {
@@ -45,6 +98,7 @@ async function runPty(command, name) {
   const snapshots = [];
   await new Promise((resolve) => {
     child.onData((chunk) => {
+      const startedAlt = inAlt;
       ansiBuffer = (ansiBuffer + chunk).slice(-256);
       if (/\x1b\[\?1049h/.test(ansiBuffer)) inAlt = true;
       if (/\x1b\[\?1049l/.test(ansiBuffer)) inAlt = false;
@@ -52,7 +106,8 @@ async function runPty(command, name) {
       for (const line of clean.split('\n').filter(Boolean)) frameLines.push(line);
       while (frameLines.length > 15) frameLines.shift();
       snapshots.push([...frameLines]);
-      if (!inAlt) applyTranscriptChunk(state, stripAnsi(chunk));
+      const visibleNormal = normalScreenPortion(startedAlt, chunk);
+      if (visibleNormal) applyTranscriptChunk(state, stripAnsi(visibleNormal));
     });
     child.onExit(resolve);
   });
@@ -137,4 +192,9 @@ a{color:#8ecaff}
 </div>`).join('')}</body></html>`;
 const reportPath = path.join(outDir, 'master-report.html');
 fs.writeFileSync(reportPath, html);
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 1440, height: 2200 } });
+await page.goto(`file://${reportPath}`);
+await page.screenshot({ path: path.join(outDir, 'master-report.png'), fullPage: true });
+await browser.close();
 console.log(reportPath);

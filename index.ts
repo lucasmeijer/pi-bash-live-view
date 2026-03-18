@@ -5,11 +5,29 @@ import pty from "node-pty";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 
 const CONFIG = loadConfig();
 const WIDGET_PREFIX = "bash-pty/live/";
 const sessions = new Map<string, LiveSession>();
 let latestCtx: ExtensionContext | null = null;
+const require = createRequire(import.meta.url);
+
+function ensureSpawnHelperExecutable() {
+  try {
+    const base = path.dirname(require.resolve('node-pty/package.json'));
+    for (const helper of [
+      path.join(base, 'prebuilds', 'darwin-arm64', 'spawn-helper'),
+      path.join(base, 'prebuilds', 'darwin-x64', 'spawn-helper'),
+    ]) {
+      if (fs.existsSync(helper)) fs.chmodSync(helper, 0o755);
+    }
+  } catch (error) {
+    debug('spawn-helper chmod failed', error);
+  }
+}
+
+ensureSpawnHelperExecutable();
 
 const bashParams = Type.Object({
   command: Type.String({ description: "Command to execute" }),
@@ -47,6 +65,7 @@ type LiveSession = {
 type TranscriptState = {
   lines: string[];
   current: string;
+  pendingCR?: boolean;
 };
 
 function loadConfig(): Config {
@@ -94,16 +113,23 @@ function sanitizeOutput(text: string) {
 
 function applyTranscriptChunk(state: TranscriptState, text: string) {
   for (const ch of text) {
+    if (state.pendingCR && ch !== "\n") state.current = "";
     if (ch === "\r") {
-      state.current = "";
-    } else if (ch === "\n") {
+      state.pendingCR = true;
+      continue;
+    }
+    if (ch === "\n") {
       state.lines.push(state.current);
       state.current = "";
-    } else if (ch === "\b") {
+      state.pendingCR = false;
+      continue;
+    }
+    if (ch === "\b") {
       state.current = state.current.slice(0, -1);
     } else if (ch >= " " || ch === "\t") {
       state.current += ch;
     }
+    state.pendingCR = false;
   }
 }
 
@@ -132,6 +158,34 @@ function detectModeTransitions(session: LiveSession, chunk: string) {
   if (/\x1b\[\?2026l/.test(session.ansiBuffer)) {
     session.inSyncRender = false;
   }
+}
+
+function normalScreenPortion(startInAlt: boolean, chunk: string) {
+  const enter = /\x1b\[\?(?:1049|1047|47)h/g;
+  const exit = /\x1b\[\?(?:1049|1047|47)l/g;
+  let out = '';
+  let index = 0;
+  let inAlt = startInAlt;
+  while (index < chunk.length) {
+    if (inAlt) {
+      exit.lastIndex = index;
+      const match = exit.exec(chunk);
+      if (!match) break;
+      index = match.index + match[0].length;
+      inAlt = false;
+      continue;
+    }
+    enter.lastIndex = index;
+    const match = enter.exec(chunk);
+    if (!match) {
+      out += chunk.slice(index);
+      break;
+    }
+    out += chunk.slice(index, match.index);
+    index = match.index + match[0].length;
+    inAlt = true;
+  }
+  return out;
 }
 
 function updateFrame(session: LiveSession, chunk: string) {
@@ -239,10 +293,12 @@ async function executePty(toolCallId: string, params: { command: string; timeout
   const exit = await new Promise<{ exitCode: number | null }>((resolve, reject) => {
     child.onData((chunk) => {
       chunks.push(chunk);
+      const startedAlt = session.inAltScreen;
       detectModeTransitions(session, chunk);
       updateFrame(session, chunk);
-      if (!session.inAltScreen) {
-        applyTranscriptChunk(session.transcript, stripAnsi(chunk));
+      const visibleNormal = normalScreenPortion(startedAlt, chunk);
+      if (visibleNormal) {
+        applyTranscriptChunk(session.transcript, stripAnsi(visibleNormal));
       }
     });
     child.onExit((event) => resolve({ exitCode: event.exitCode }));

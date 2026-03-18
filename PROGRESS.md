@@ -6,4 +6,7 @@
 - added `usePTY?: boolean` branching, PTY-backed execution via `node-pty`, a delayed live widget, and a `/bash-pty` slash command
 - added config loading from global/project json locations
 - added initial fixture scripts and a first-cut artifact/report generator in `testing/run-report.mjs`
-- current gaps: transcript fidelity is still simplified (not true xterm state extraction yet), widget rendering is plain-text rather than full-color xterm snapshotting, and end-to-end/manual verification flow still needs refinement
+- added the macOS `node-pty` spawn-helper chmod workaround so report generation actually runs here
+- verified report generation end-to-end and produced `artifacts/master-report.html`, `artifacts/master-report.png`, per-case gif files, and sample frame pngs
+- manually spot-checked sample frames for spinner/alt-only/ffmpeg and confirmed the report page renders in a browser screenshot
+- current gaps: transcript fidelity is still simplified (not true xterm state extraction yet), widget rendering is plain-text rather than full-color xterm snapshotting, and end-to-end pi-driven override validation still needs refinement
