@@ -6,6 +6,7 @@ import pty from 'node-pty';
 import stripAnsi from 'strip-ansi';
 import { chromium } from 'playwright';
 import GIFEncoder from 'gifencoder';
+import sharp from 'sharp';
 import { PNG } from 'pngjs';
 
 const cwd = process.cwd();
@@ -57,41 +58,250 @@ function finalizeTranscript(state) {
   return text.length === 0 ? '(no output)' : `${text}\n`;
 }
 function stripControlForFrame(text) {
-  return stripAnsi(text).replace(/\u0000/g, '').replace(/\p{Cf}/gu, '');
+  return text.replace(/\u0000/g, '').replace(/\p{Cf}/gu, '');
 }
 function createFrameState() {
-  return { lines: [''], cursorRow: 0, cursorCol: 0 };
+  return { lines: [[{ ch: ' ', style: defaultStyle() }]], cursorRow: 0, cursorCol: 0, style: defaultStyle() };
+}
+function defaultStyle() {
+  return { fg: null, bold: false, dim: false };
+}
+function cloneStyle(style) {
+  return { fg: style.fg, bold: style.bold, dim: style.dim };
+}
+function styleToCss(style) {
+  const colors = {
+    red: '#ff6b6b',
+    green: '#51cf66',
+    yellow: '#ffd43b',
+    blue: '#74c0fc',
+    magenta: '#f783ff',
+    cyan: '#66d9e8',
+    gray: '#adb5bd',
+  };
+  const parts = [];
+  if (style.fg && colors[style.fg]) parts.push(`color:${colors[style.fg]}`);
+  if (style.bold) parts.push('font-weight:700');
+  if (style.dim) parts.push('opacity:0.75');
+  return parts.join(';');
+}
+function svgAttrsForStyle(style) {
+  const colors = {
+    red: '#ff6b6b',
+    green: '#51cf66',
+    yellow: '#ffd43b',
+    blue: '#74c0fc',
+    magenta: '#f783ff',
+    cyan: '#66d9e8',
+    gray: '#adb5bd',
+  };
+  let attrs = '';
+  if (style.fg && colors[style.fg]) attrs += ` fill="${colors[style.fg]}"`;
+  if (style.bold) attrs += ' font-weight="700"';
+  if (style.dim) attrs += ' opacity="0.75"';
+  return attrs;
+}
+function ensureRow(state, row, cols) {
+  while (state.lines.length <= row) {
+    state.lines.push(Array.from({ length: cols }, () => ({ ch: ' ', style: defaultStyle() })));
+  }
+  const line = state.lines[row];
+  while (line.length < cols) line.push({ ch: ' ', style: defaultStyle() });
 }
 function writeFrameChar(state, ch, cols) {
-  const current = state.lines[state.cursorRow] ?? '';
-  const padded = current.padEnd(state.cursorCol, ' ');
-  state.lines[state.cursorRow] = `${padded.slice(0, state.cursorCol)}${ch}${padded.slice(state.cursorCol + 1)}`.slice(0, cols);
+  ensureRow(state, state.cursorRow, cols);
+  state.lines[state.cursorRow][state.cursorCol] = { ch, style: cloneStyle(state.style) };
   state.cursorCol = Math.min(cols - 1, state.cursorCol + 1);
 }
+function applySgr(style, codes) {
+  for (const code of codes) {
+    if (code === 0) Object.assign(style, defaultStyle());
+    else if (code === 1) style.bold = true;
+    else if (code === 2) style.dim = true;
+    else if (code === 22) {
+      style.bold = false;
+      style.dim = false;
+    } else if (code === 31) style.fg = 'red';
+    else if (code === 32) style.fg = 'green';
+    else if (code === 33) style.fg = 'yellow';
+    else if (code === 34) style.fg = 'blue';
+    else if (code === 35) style.fg = 'magenta';
+    else if (code === 36) style.fg = 'cyan';
+    else if (code === 90) style.fg = 'gray';
+    else if (code === 39) style.fg = null;
+  }
+}
 function applyFrameChunk(state, text, rows, cols) {
-  for (const ch of text) {
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === '\x1b' && text[i + 1] === '[') {
+      const sgrMatch = text.slice(i).match(/^\x1b\[([0-9;]*)m/);
+      if (sgrMatch) {
+        const codes = (sgrMatch[1] ? sgrMatch[1].split(';').map(Number) : [0]).filter((n) => !Number.isNaN(n));
+        applySgr(state.style, codes);
+        i += sgrMatch[0].length;
+        continue;
+      }
+      const csiMatch = text.slice(i).match(/^\x1b\[[0-9;?]*[A-Za-z]/);
+      if (csiMatch) {
+        i += csiMatch[0].length;
+        continue;
+      }
+    }
+    const ch = text[i];
     if (ch === '\r') {
       state.cursorCol = 0;
+      i += 1;
       continue;
     }
     if (ch === '\n') {
       state.cursorRow += 1;
       state.cursorCol = 0;
-      while (state.lines.length <= state.cursorRow) state.lines.push('');
+      ensureRow(state, state.cursorRow, cols);
       if (state.lines.length > rows) {
         state.lines.shift();
         state.cursorRow = Math.max(0, state.cursorRow - 1);
       }
+      i += 1;
       continue;
     }
     if (ch === '\b') {
       state.cursorCol = Math.max(0, state.cursorCol - 1);
+      i += 1;
       continue;
     }
-    if (ch >= ' ' || ch === '\t') {
-      writeFrameChar(state, ch === '\t' ? ' ' : ch, cols);
-    }
+    if (ch >= ' ' || ch === '\t') writeFrameChar(state, ch === '\t' ? ' ' : ch, cols);
+    i += 1;
   }
+}
+function frameSnapshotToHtmlLines(lines) {
+  return lines.map((line) => {
+    if (!Array.isArray(line)) return esc(String(line ?? ''));
+    const cells = line;
+    let html = '';
+    let currentCss = null;
+    let chunk = '';
+    const flush = () => {
+      if (!chunk) return;
+      const escaped = esc(chunk);
+      html += currentCss ? `<span style="${currentCss}">${escaped}</span>` : escaped;
+      chunk = '';
+    };
+    for (const cell of cells) {
+      const css = styleToCss(cell.style ?? defaultStyle());
+      if (css !== currentCss) {
+        flush();
+        currentCss = css || null;
+      }
+      chunk += cell.ch;
+    }
+    flush();
+    return html.replace(/\s+$/g, '');
+  });
+}
+function styleToAnsi(style) {
+  const codes = [];
+  if (style.bold) codes.push(1);
+  if (style.dim) codes.push(2);
+  if (style.fg === 'red') codes.push(31);
+  if (style.fg === 'green') codes.push(32);
+  if (style.fg === 'yellow') codes.push(33);
+  if (style.fg === 'blue') codes.push(34);
+  if (style.fg === 'magenta') codes.push(35);
+  if (style.fg === 'cyan') codes.push(36);
+  if (style.fg === 'gray') codes.push(90);
+  return codes.length ? `\x1b[${codes.join(';')}m` : '';
+}
+function frameSnapshotToAnsiLines(lines) {
+  return lines.map((line) => {
+    if (!Array.isArray(line)) return String(line ?? '');
+    let out = '';
+    let current = defaultStyle();
+    for (const cell of line) {
+      const style = cell.style ?? defaultStyle();
+      if (style.fg !== current.fg || style.bold !== current.bold || style.dim !== current.dim) {
+        out += '\x1b[0m' + styleToAnsi(style);
+        current = cloneStyle(style);
+      }
+      out += cell.ch;
+    }
+    return `${out}\x1b[0m`.replace(/\s+\x1b\[0m$/, '\x1b[0m');
+  });
+}
+function padAnsiLine(line, width) {
+  const visible = stripAnsi(line);
+  return line + ' '.repeat(Math.max(0, width - visible.length));
+}
+function buildWidgetAnsiLines(title, snapshot, width, rows) {
+  const accent = '\x1b[38;2;77;163;255m';
+  const reset = '\x1b[0m';
+  const innerWidth = Math.max(10, width - 4);
+  const header = ` ${title} `;
+  const top = `${accent}┌${header}${'─'.repeat(Math.max(0, width - 2 - header.length))}┐${reset}`;
+  const bottom = `${accent}└${'─'.repeat(Math.max(0, width - 2))}┘${reset}`;
+  const bodySource = frameSnapshotToAnsiLines(snapshot).slice(-rows);
+  const body = [];
+  for (let i = 0; i < rows; i++) {
+    const line = padAnsiLine(bodySource[i] ?? '', innerWidth);
+    body.push(`${accent}│ ${reset}${line}${accent} │${reset}`);
+  }
+  return [top, ...body, bottom];
+}
+function escapeXml(text) {
+  return text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
+}
+function parseAnsiLineToSegments(line) {
+  const segments = [];
+  let style = defaultStyle();
+  let text = '';
+  let i = 0;
+  const flush = () => {
+    if (!text) return;
+    segments.push({ text, style: cloneStyle(style) });
+    text = '';
+  };
+  while (i < line.length) {
+    if (line[i] === '\x1b' && line[i + 1] === '[') {
+      const match = line.slice(i).match(/^\x1b\[([0-9;]*)m/);
+      if (match) {
+        flush();
+        const codes = (match[1] ? match[1].split(';').map(Number) : [0]).filter((n) => !Number.isNaN(n));
+        applySgr(style, codes);
+        i += match[0].length;
+        continue;
+      }
+    }
+    text += line[i];
+    i += 1;
+  }
+  flush();
+  return segments;
+}
+async function ansiLinesToPng(lines, pngPath) {
+  const fontSize = 18;
+  const charWidth = 10;
+  const lineHeight = 24;
+  const padding = 14;
+  const visibleWidth = Math.max(...lines.map((line) => stripAnsi(line).length), 1);
+  const width = padding * 2 + visibleWidth * charWidth;
+  const height = padding * 2 + lines.length * lineHeight;
+  const background = '#111111';
+  const defaultColor = '#dddddd';
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`;
+  svg += `<rect width="100%" height="100%" fill="${background}"/>`;
+  lines.forEach((line, row) => {
+    const y = padding + (row + 1) * lineHeight - 6;
+    let x = padding;
+    svg += `<text xml:space="preserve" x="${x}" y="${y}" font-family="Menlo, Monaco, 'Courier New', monospace" font-size="${fontSize}" fill="${defaultColor}">`;
+    for (const segment of parseAnsiLineToSegments(line)) {
+      const attrs = svgAttrsForStyle(segment.style);
+      svg += `<tspan x="${x}"${attrs}>${escapeXml(segment.text)}</tspan>`;
+      x += segment.text.length * charWidth;
+    }
+    svg += `</text>`;
+  });
+  svg += `</svg>`;
+  await sharp(Buffer.from(svg)).png().toFile(pngPath);
 }
 function normalScreenPortion(inAltAtStart, chunk) {
   const enter = /\x1b\[\?(?:1049|1047|47)h/g;
@@ -138,7 +348,7 @@ async function runPty(command, name) {
       if (/\x1b\[\?1049l/.test(ansiBuffer)) inAlt = false;
       const clean = stripControlForFrame(chunk);
       if (clean) applyFrameChunk(frame, clean, 15, 100);
-      snapshots.push([...frame.lines]);
+      snapshots.push(frame.lines.map((line) => line.map((cell) => ({ ...cell, style: { ...cell.style } }))));
       const visibleNormal = normalScreenPortion(startedAlt, chunk);
       if (visibleNormal) applyTranscriptChunk(state, stripAnsi(visibleNormal));
     });
@@ -169,32 +379,24 @@ function readFixtureSource(command) {
   };
 }
 
-function renderTerminalHtml(title, lines) {
-  return `<!doctype html><html><body style="margin:0;background:#111;color:#ddd;font-family:Menlo,monospace"><div style="width:840px;background:#111;padding:12px"><div style="border:1px solid #4da3ff;border-radius:8px;overflow:hidden"><div style="padding:6px 10px;border-bottom:1px solid #4da3ff;color:#7ab7ff">${esc(title)}</div><pre style="margin:0;padding:10px;min-height:270px">${esc(lines.join('\n'))}</pre></div></div></body></html>`;
-}
-
 async function renderGif(name, snapshots) {
-  const browser = await chromium.launch();
-  const page = await browser.newPage({ viewport: { width: 864, height: 340 } });
   const frameDir = path.join(outDir, `${name}-frames`);
   fs.rmSync(frameDir, { recursive: true, force: true });
   fs.mkdirSync(frameDir, { recursive: true });
   const pngPaths = [];
   const step = Math.max(1, Math.floor(snapshots.length / 12));
   for (let i = 0; i < snapshots.length; i += step) {
-    const lines = snapshots[i];
-    await page.setContent(renderTerminalHtml('Live terminal', lines));
+    const lines = buildWidgetAnsiLines('Live terminal', snapshots[i], 84, 15);
     const pngPath = path.join(frameDir, `${String(pngPaths.length).padStart(3, '0')}.png`);
-    await page.screenshot({ path: pngPath });
+    await ansiLinesToPng(lines, pngPath);
     pngPaths.push(pngPath);
   }
   if (snapshots.length > 0 && (snapshots.length - 1) % step !== 0) {
-    await page.setContent(renderTerminalHtml('Live terminal', snapshots.at(-1) ?? []));
+    const lines = buildWidgetAnsiLines('Live terminal', snapshots.at(-1) ?? [], 84, 15);
     const pngPath = path.join(frameDir, `${String(pngPaths.length).padStart(3, '0')}.png`);
-    await page.screenshot({ path: pngPath });
+    await ansiLinesToPng(lines, pngPath);
     pngPaths.push(pngPath);
   }
-  await browser.close();
   const gifPath = path.join(outDir, `${name}.gif`);
   const first = PNG.sync.read(fs.readFileSync(pngPaths[0]));
   const encoder = new GIFEncoder(first.width, first.height);
@@ -218,8 +420,8 @@ const cases = [
   ['alt-progress-then-text', `node testing/fixtures/alt-progress-then-text.js`],
   ['synchronized-render', `node testing/fixtures/synchronized-render.js`],
   ['alt-only', `node testing/fixtures/alt-only.js`],
-  ['curl', `curl -I https://example.com || true`],
-  ['ffmpeg', `ffmpeg -version || true`],
+  ['curl', `PORT=18765; node testing/fixtures/slow-http-server.js "$PORT" 240000 12000 350 >/tmp/bash-pty-curl-server.log 2>&1 & pid=$!; trap 'kill $pid 2>/dev/null || true' EXIT; while ! grep -q "ready:$PORT" /tmp/bash-pty-curl-server.log 2>/dev/null; do sleep 0.05; done; curl http://127.0.0.1:$PORT/slow -o /dev/null; kill $pid 2>/dev/null || true; wait $pid 2>/dev/null || true`],
+  ['ffmpeg', `ffmpeg -hide_banner -re -f lavfi -i testsrc2=size=640x360:rate=30 -t 6 -f null - || true`],
   ['htop', `htop --version || true`],
 ];
 
