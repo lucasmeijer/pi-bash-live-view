@@ -72,6 +72,7 @@ Inside pi:
 
 - The live widget and the report/test pipeline now share the same reusable `xterm-headless`-backed terminal emulator in `src/terminal-emulator.js`.
 - That shared component now exposes terminal-emulator-flavored APIs like `consumeProcessStdout()`, `getViewportAsAnsiLines()`, and `getStrippedTextIncludingEntireScrollback()`.
+- The emulator now uses a streaming normal-screen transcript filter, so split alt-screen DEC private mode sequences do not leak alt-screen-only content into the final plain-text transcript.
 - pi TUI components render `string[]`, so the live widget currently converts xterm viewport state into ANSI-colored lines instead of drawing raw terminal cells directly.
 - GIF/frame generation is intended to be close to production widget rendering.
 - The report rasterizer still converts ANSI-colored widget lines directly into PNGs/GIFs instead of screenshotting HTML for GIF frames.

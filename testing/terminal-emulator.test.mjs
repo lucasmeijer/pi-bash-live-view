@@ -62,3 +62,19 @@ test('split alt-screen private mode sequences still update terminal state tracki
     emulator.dispose();
   }
 });
+
+test('split alt-screen transitions are excluded from the final normal-screen transcript', async () => {
+  const emulator = createTerminalEmulator({ cols: 30, rows: 6 });
+  try {
+    await emulator.consumeProcessStdout('before\n');
+    await emulator.consumeProcessStdout('\x1b[?104');
+    await emulator.consumeProcessStdout('9halt-screen only');
+    await emulator.consumeProcessStdout('\nmore alt text');
+    await emulator.consumeProcessStdout('\x1b[?104');
+    await emulator.consumeProcessStdout('9lafter\n');
+
+    assert.equal(emulator.getStrippedTextIncludingEntireScrollback(), 'before\nafter\n');
+  } finally {
+    emulator.dispose();
+  }
+});

@@ -28,6 +28,8 @@
 - switched `testing/run-report.mjs` to use that same shared terminal emulator for PTY feeding, frame capture, synchronized-render snapshot locking, and final transcript generation
 - confirmed the architecture matches pi's public TUI model better: the widget is backed by xterm cell state internally, but pi components still render `string[]`, so the external widget surface remains ANSI-colored lines
 - added `artifacts/reusable-live-widget-api.html`, a visual explainer of the shared terminal-emulator API and how runtime/tests consume it
+- the transcript path now uses a streaming normal-screen filter so split alt-screen enter/exit sequences no longer leak alt-screen-only content into the final transcript accumulator
+- extended `testing/terminal-emulator.test.mjs` with coverage for split-chunk alt-screen transcript exclusion in addition to split private-mode state tracking and synchronized-render locking
 - updated `PLAN.md` to reflect that it remains the target architecture/spec and that the current repo only partially implements it
 - updated `PLAN.md` to require keeping `AGENTS.md` current with repo-local tooling commands/workflows
 - added project-local `AGENTS.md` with the current working commands for install/report/reload/artifact inspection

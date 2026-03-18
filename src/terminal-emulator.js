@@ -55,32 +55,78 @@ function finalizeTranscript(state) {
   return text.length === 0 ? '(no output)' : `${text}\n`;
 }
 
-function normalScreenPortion(inAltAtStart, chunk) {
-  const enter = /\x1b\[\?(?:1049|1047|47)h/g;
-  const exit = /\x1b\[\?(?:1049|1047|47)l/g;
-  let out = '';
-  let index = 0;
+function createNormalScreenTranscriptFilter(inAltAtStart = false) {
   let inAlt = inAltAtStart;
-  while (index < chunk.length) {
-    if (inAlt) {
-      exit.lastIndex = index;
-      const match = exit.exec(chunk);
-      if (!match) break;
-      index = match.index + match[0].length;
-      inAlt = false;
-      continue;
-    }
-    enter.lastIndex = index;
-    const match = enter.exec(chunk);
-    if (!match) {
-      out += chunk.slice(index);
-      break;
-    }
-    out += chunk.slice(index, match.index);
-    index = match.index + match[0].length;
-    inAlt = true;
+  let state = 'ground';
+  let privateMarker = false;
+  let params = '';
+
+  function reset() {
+    state = 'ground';
+    privateMarker = false;
+    params = '';
   }
-  return out;
+
+  function finalize(finalByte) {
+    if (privateMarker && (finalByte === 'h' || finalByte === 'l')) {
+      const enabled = finalByte === 'h';
+      for (const part of params.split(';')) {
+        if (!part) continue;
+        const mode = Number(part);
+        if (mode === 1049 || mode === 1047 || mode === 47) inAlt = enabled;
+      }
+    }
+    reset();
+  }
+
+  return {
+    push(text) {
+      let out = '';
+      for (const ch of text) {
+        if (state === 'ground') {
+          if (ch === '\x1b') {
+            state = 'escape';
+            continue;
+          }
+          if (!inAlt) out += ch;
+          continue;
+        }
+        if (state === 'escape') {
+          if (ch === '[') {
+            state = 'csi';
+            privateMarker = false;
+            params = '';
+            continue;
+          }
+          reset();
+          continue;
+        }
+        if (state === 'csi') {
+          if (ch === '?') {
+            if (params.length === 0 && !privateMarker) {
+              privateMarker = true;
+              continue;
+            }
+            reset();
+            continue;
+          }
+          if ((ch >= '0' && ch <= '9') || ch === ';') {
+            params += ch;
+            continue;
+          }
+          if (ch >= '@' && ch <= '~') {
+            finalize(ch);
+            continue;
+          }
+          reset();
+        }
+      }
+      return out;
+    },
+    getState() {
+      return { inAlt, state };
+    },
+  };
 }
 
 function hexByte(n) {
@@ -339,6 +385,7 @@ export function createTerminalEmulator({ cols, rows, scrollback = 10_000, title 
   let lastCompletedSnapshot = snapshotTerminal(term);
   let latestSnapshot = cloneSnapshot(lastCompletedSnapshot);
   let lastElapsedMs = 0;
+  const transcriptFilter = createNormalScreenTranscriptFilter();
   const modeTracker = createDecPrivateModeTracker((mode, enabled) => {
     if (mode === 2026) {
       inSyncRender = enabled;
@@ -354,10 +401,9 @@ export function createTerminalEmulator({ cols, rows, scrollback = 10_000, title 
   }
 
   async function consumeProcessStdout(chunk, { elapsedMs = lastElapsedMs } = {}) {
-    const startedAlt = inAltScreen;
     lastElapsedMs = elapsedMs;
     modeTracker.push(chunk);
-    const visibleNormal = normalScreenPortion(startedAlt, chunk);
+    const visibleNormal = transcriptFilter.push(chunk);
     if (visibleNormal) applyTranscriptChunk(transcript, stripAnsi(visibleNormal));
     writeChain = writeChain.then(() => new Promise((resolve) => {
       term.write(chunk, () => {
