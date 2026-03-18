@@ -21,6 +21,33 @@ The implementation lands in **this repo** as a single extension package and may 
 
 ---
 
+## Current implementation status (2026-03-18)
+
+This plan is still the target architecture/acceptance spec, but the repo currently only has a **partial implementation**.
+
+Implemented now:
+- `bash` override scaffold in `index.ts`
+- `usePTY?: boolean` branching
+- PTY execution via `node-pty`
+- delayed live widget scaffold
+- `/bash-pty` slash command
+- config loading from global/project JSON
+- fixture-based test/report pipeline
+- master HTML report generation with GIFs and browser screenshot verification
+- report frame rasterization now renders from the same kind of **ANSI-colored widget lines** we intend to render in pi, instead of taking HTML screenshots for GIF frames
+- PTY-aware custom fixtures, including colored output and long-running `curl`/`ffmpeg` progress cases
+
+Still missing or intentionally simplified versus this plan:
+- no real `xterm-headless` integration yet for live widget state/transcript derivation
+- live widget is still simplified rather than a full custom TUI component with true terminal cell/color fidelity
+- transcript extraction is still simplified, not true normal-screen + scrollback extraction from xterm state
+- no full end-to-end pi-driven validation yet
+- no true production-quality truncation/temp-file parity yet
+
+So: treat this document as the **target plan**, not as a statement that the repo already satisfies all requirements.
+
+---
+
 ## Product decisions already fixed
 
 These are explicit user decisions and should be treated as requirements.
