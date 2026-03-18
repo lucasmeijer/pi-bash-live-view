@@ -20,6 +20,8 @@
 - regenerated artifacts and manually confirmed from frame screenshots that spinner/spill/alt-progress now show ANSI colors, while `curl` and `ffmpeg` show real multi-second progress states
 - manually spot-checked sample frames for spinner/alt-only/ffmpeg and confirmed the report page renders in a browser screenshot
 - updated `PLAN.md` to reflect that it remains the target architecture/spec and that the current repo only partially implements it
+- updated `PLAN.md` to require keeping `AGENTS.md` current with repo-local tooling commands/workflows
+- added project-local `AGENTS.md` with the current working commands for install/report/reload/artifact inspection
 
 ## Current gaps
 

@@ -131,6 +131,7 @@ Further decisions:
 - Comparison against built-in bash should exist for all tests, even if some differences are expected/interesting.
 - Add a manual slash command `/bash-pty` for easy PTY execution during development.
 - Logging/debugging should follow the conventions/patterns of `nicobailon/pi-interactive-shell` as closely as practical.
+- Keep `AGENTS.md` up to date with the concrete repo-local commands and tooling workflows that can be run while working on this repo (for example: report generation, tests, artifact verification, and any future e2e commands).
 
 ---
 
