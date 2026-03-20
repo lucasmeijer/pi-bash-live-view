@@ -33,6 +33,7 @@
 - updated `PLAN.md` to reflect that it remains the target architecture/spec and that the current repo only partially implements it
 - updated `PLAN.md` to require keeping `AGENTS.md` current with repo-local tooling commands/workflows
 - added project-local `AGENTS.md` with the current working commands for install/report/reload/artifact inspection
+- reduced the default live-widget visibility delay from 3000ms to 500ms so PTY widgets appear much sooner by default
 
 ## Current gaps
 

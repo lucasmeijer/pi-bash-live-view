@@ -255,7 +255,7 @@ Initial config keys:
 
 ```json
 {
-  "widgetDelayMs": 3000,
+  "widgetDelayMs": 500,
   "widgetHeight": 15,
   "debug": false,
   "testWidth": 100
@@ -1143,3 +1143,4 @@ Those two views intentionally differ:
 - final tool result is plain sanitized text derived from xterm's retained normal-screen state, excluding alt-screen
 
 That split is the core design choice of this extension.
+on.

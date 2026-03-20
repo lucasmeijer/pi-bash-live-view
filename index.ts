@@ -58,7 +58,7 @@ ensureSpawnHelperExecutable();
 
 function loadConfig(): Config {
   const defaults: Config = {
-    widgetDelayMs: 3000,
+    widgetDelayMs: 500,
     widgetHeight: 15,
     testWidth: 100,
     scrollbackLines: 10000,
