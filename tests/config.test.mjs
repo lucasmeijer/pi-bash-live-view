@@ -6,7 +6,7 @@ import path from 'node:path';
 import { loadConfig } from '../config.ts';
 
 function withTempDir(fn) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bash-live-view-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bash-live-view-'));
   try {
     fn(dir);
   } finally {
@@ -18,7 +18,7 @@ test('loadConfig merges project config and clamps numeric values', () => {
   withTempDir((dir) => {
     const projectDir = path.join(dir, '.pi');
     fs.mkdirSync(projectDir, { recursive: true });
-    fs.writeFileSync(path.join(projectDir, 'bash-live-view.json'), JSON.stringify({
+    fs.writeFileSync(path.join(projectDir, 'pi-bash-live-view.json'), JSON.stringify({
       widgetDelayMs: 999999,
       widgetHeight: 1,
       testWidth: 400,

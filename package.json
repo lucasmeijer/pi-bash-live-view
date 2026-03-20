@@ -1,18 +1,18 @@
 {
-  "name": "bash-live-view",
+  "name": "pi-bash-live-view",
   "version": "0.1.0",
   "description": "A pi extension that adds optional PTY-backed live terminal rendering to the bash tool via usePTY=true.",
   "type": "module",
   "author": "Lucas Meijer",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lucasmeijer/bash-live-view.git"
+    "url": "git+https://github.com/lucasmeijer/pi-bash-live-view.git"
   },
   "bugs": {
-    "url": "https://github.com/lucasmeijer/bash-live-view/issues"
+    "url": "https://github.com/lucasmeijer/pi-bash-live-view/issues"
   },
-  "homepage": "https://github.com/lucasmeijer/bash-live-view#readme",
+  "homepage": "https://github.com/lucasmeijer/pi-bash-live-view#readme",
   "keywords": [
     "pi-package",
     "pi",
@@ -35,7 +35,8 @@
     "src/",
     "scripts/",
     "examples/",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "pi": {
     "extensions": [

@@ -14,5 +14,5 @@ try {
     if (mode !== 0o755) fs.chmodSync(helper, 0o755);
   }
 } catch (error) {
-  console.warn('[bash-live-view] spawn-helper fix skipped:', error?.message ?? error);
+  console.warn('[pi-bash-live-view] spawn-helper fix skipped:', error?.message ?? error);
 }

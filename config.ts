@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-export const CONFIG_BASENAME = 'bash-live-view.json';
+export const CONFIG_BASENAME = 'pi-bash-live-view.json';
 
 export type BashLiveViewConfig = {
   widgetDelayMs: number;
@@ -35,7 +35,7 @@ export function loadConfig(cwd = process.cwd()): BashLiveViewConfig {
       if (!fs.existsSync(file)) continue;
       merged = { ...merged, ...JSON.parse(fs.readFileSync(file, 'utf8')) };
     } catch (error) {
-      console.warn(`[bash-live-view] failed to load config ${file}:`, error);
+      console.warn(`[pi-bash-live-view] failed to load config ${file}:`, error);
     }
   }
 

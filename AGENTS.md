@@ -2,7 +2,7 @@
 
 ## Repo purpose
 
-This repo contains the `bash-live-view` pi extension.
+This repo contains the `pi-bash-live-view` pi extension.
 
 It overrides model-facing `bash` with an optional PTY-backed execution path via `usePTY: true`, plus a live terminal widget for longer-running terminal-style commands.
 

@@ -1,4 +1,4 @@
-# bash-live-view examples
+# pi-bash-live-view examples
 
 ## Manual PTY run inside pi
 

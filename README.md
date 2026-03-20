@@ -1,4 +1,4 @@
-# bash-live-view
+# pi-bash-live-view
 
 A pi extension that upgrades model-initiated `bash` calls with an optional PTY-backed live terminal view.
 
@@ -8,7 +8,7 @@ When a tool call uses `usePTY: true`, the command runs inside a real PTY, render
 
 Built-in `bash` is great for ordinary command output, but some commands behave much better when they think they are inside a terminal.
 
-`bash-live-view` is for cases like:
+`pi-bash-live-view` is for cases like:
 
 - `htop`
 - `ffmpeg`
@@ -22,7 +22,7 @@ The extension keeps normal `bash` behavior as the default. PTY mode is opt-in th
 ## Install
 
 ```bash
-pi install npm:bash-live-view
+pi install npm:pi-bash-live-view
 ```
 
 ## Requirements
@@ -113,8 +113,8 @@ Current public behavior:
 
 Configuration files are merged in this order:
 
-- global: `~/.pi/agent/bash-live-view.json`
-- project: `.pi/bash-live-view.json`
+- global: `~/.pi/agent/pi-bash-live-view.json`
+- project: `.pi/pi-bash-live-view.json`
 
 Project config overrides global config.
 
@@ -203,7 +203,7 @@ Possible reasons:
 Set:
 
 ```bash
-BASH_LIVE_VIEW_DEBUG=1
+PI_BASH_LIVE_VIEW_DEBUG=1
 ```
 
 ## Limitations

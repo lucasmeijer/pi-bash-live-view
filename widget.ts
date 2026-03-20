@@ -1,7 +1,7 @@
 import type { ExtensionContext } from '@mariozechner/pi-coding-agent';
 import { createTerminalEmulator } from './src/terminal-emulator.js';
 
-export const WIDGET_PREFIX = 'bash-live-view/live/';
+export const WIDGET_PREFIX = 'pi-bash-live-view/live/';
 
 type TerminalEmulator = ReturnType<typeof createTerminalEmulator>;
 
