@@ -1,6 +1,8 @@
-node_modules
-artifacts
+node_modules/
+artifacts/
 *.gif
 *.html
 *.log
 *.tmp
+*.tgz
+.DS_Store

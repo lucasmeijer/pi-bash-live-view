@@ -1,20 +1,58 @@
 {
-  "name": "bash-terminal",
-  "private": true,
+  "name": "bash-live-view",
+  "version": "0.1.0",
+  "description": "A pi extension that adds optional PTY-backed live terminal rendering to the bash tool via usePTY=true.",
   "type": "module",
+  "author": "Lucas Meijer",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lucasmeijer/bash-live-view.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lucasmeijer/bash-live-view/issues"
+  },
+  "homepage": "https://github.com/lucasmeijer/bash-live-view#readme",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "bash",
+    "pty",
+    "terminal",
+    "tui"
+  ],
+  "files": [
+    "index.ts",
+    "config.ts",
+    "debug.ts",
+    "pty-execute.ts",
+    "spawn-helper.ts",
+    "tool-schema.ts",
+    "truncate.ts",
+    "widget.ts",
+    "src/",
+    "scripts/",
+    "examples/",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "test": "node --test testing/*.test.mjs",
-    "report": "node testing/run-report.mjs"
+    "postinstall": "node ./scripts/fix-spawn-helper.cjs",
+    "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
     "@mariozechner/pi-coding-agent": "^0.58.4",
-    "@mariozechner/pi-ai": "^0.58.4",
     "@sinclair/typebox": "^0.34.38",
-    "gifencoder": "^2.0.1",
     "node-pty": "^1.0.0",
-    "pngjs": "^7.0.0",
-    "playwright": "^1.53.2",
-    "sharp": "^0.34.2",
     "strip-ansi": "^7.1.0",
     "xterm-headless": "^5.3.0"
   },
