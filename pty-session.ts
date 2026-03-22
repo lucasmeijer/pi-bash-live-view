@@ -22,6 +22,8 @@ export class PtyTerminalSession {
   private readonly terminalEmulator: TerminalEmulator;
   private readonly startedAt = Date.now();
   private readonly exitListeners = new Set<ExitListener>();
+  private lastOutputAt = Date.now();
+  private lastChunkEndedWithNewline = true;
   private _exited = false;
   private _exitCode: number | null = null;
   private _signal: number | undefined;
@@ -54,6 +56,8 @@ export class PtyTerminalSession {
     });
 
     this.ptyProcess.onData((chunk) => {
+      this.lastOutputAt = Date.now();
+      this.lastChunkEndedWithNewline = /(?:\r|\n)\s*$/u.test(chunk);
       void this.terminalEmulator.consumeProcessStdout(chunk, {
         elapsedMs: Date.now() - this.startedAt,
       });
@@ -93,6 +97,14 @@ export class PtyTerminalSession {
 
   get rows() {
     return this.terminalEmulator.rows;
+  }
+
+  getLastOutputAt() {
+    return this.lastOutputAt;
+  }
+
+  getLastChunkEndedWithNewline() {
+    return this.lastChunkEndedWithNewline;
   }
 
   addExitListener(listener: ExitListener): () => void {
