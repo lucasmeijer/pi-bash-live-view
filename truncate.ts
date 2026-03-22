@@ -66,3 +66,13 @@ export function buildTimeoutError(fullOutput: string, timeout: number) {
   return new Error(output ? `${output}\n\nCommand timed out after ${timeout} seconds` : `Command timed out after ${timeout} seconds`);
 }
 
+export function buildInteractiveStdinError(fullOutput: string, prompt: string, idleMs: number) {
+  const output = fullOutput === '(no output)' ? '' : fullOutput;
+  const normalizedPrompt = prompt.trim();
+  const suffix = [
+    `Command appears to be waiting for interactive input after ${(idleMs / 1000).toFixed(1)} seconds, but usePTY=true in pi-bash-live-view is output-only. Re-run with non-interactive flags or run the command manually.`,
+    normalizedPrompt ? `Last prompt: ${normalizedPrompt}` : undefined,
+  ].filter(Boolean).join('\n');
+
+  return new Error(output ? `${output}\n\n${suffix}` : suffix);
+}
