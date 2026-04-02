@@ -1,6 +1,6 @@
 import { createBashTool, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from '@mariozechner/pi-coding-agent';
 import { Type } from '@sinclair/typebox';
-import { executePtyCommand } from './pty-execute.ts';
+import { createPtyBashOperations, executePtyCommand } from './pty-execute.ts';
 import { ensureSpawnHelperExecutable } from './spawn-helper.ts';
 
 const bashLiveViewParams = Type.Object({
@@ -41,6 +41,12 @@ export default function bashLiveView(pi: ExtensionAPI) {
       }
       return executePtyCommand(toolCallId, params, signal, ctx);
     },
+  });
+
+  pi.on('user_bash', (_event, ctx) => {
+    return {
+      operations: createPtyBashOperations(ctx),
+    };
   });
 
   pi.registerCommand('bash-pty', {

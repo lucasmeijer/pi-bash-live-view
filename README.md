@@ -4,7 +4,7 @@ When agents emit tool calls calls for build systems, those calls can take a long
 Often they have really nice visualizations of progress.
 I cannot see those in pi, making me blind to what is happening.
 
-This extension upgrades model-initiated `bash` calls with an optional PTY-backed live terminal view.
+This extension upgrades model-initiated `bash` calls with an optional PTY-backed live terminal view, and routes interactive `!` and `!!` commands through the same PTY live view.
 
 [![Demo](assets/demo.gif)](https://github.com/lucasmeijer/pi-bash-live-view/releases/download/readme-assets/Screen.Recording.2026-03-20.at.22.27.36.web.mp4)
 

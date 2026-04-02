@@ -1,4 +1,5 @@
-import { getShellConfig, type ExtensionContext } from '@mariozechner/pi-coding-agent';
+import type { BashOperations, ExtensionContext } from '@mariozechner/pi-coding-agent';
+import { getShellConfig } from '@mariozechner/pi-coding-agent';
 import { buildAbortError, buildExitCodeError, buildSuccessfulBashResult, buildTimeoutError } from './truncate.ts';
 import { hideWidget, showWidget, type LiveSession } from './widget.ts';
 import { PtyTerminalSession } from './pty-session.ts';
@@ -8,9 +9,11 @@ export const WIDGET_HEIGHT = 15;
 export const DEFAULT_PTY_COLS = 100;
 export const XTERM_SCROLLBACK_LINES = 100_000;
 
-export async function executePtyCommand(
-  toolCallId: string,
-  params: { command: string; timeout?: number },
+async function runPtyCommand(
+  id: string,
+  command: string,
+  cwd: string,
+  timeout: number | undefined,
   signal: AbortSignal,
   ctx: ExtensionContext,
 ) {
@@ -18,8 +21,8 @@ export async function executePtyCommand(
   const cols = DEFAULT_PTY_COLS;
   const rows = WIDGET_HEIGHT;
   const ptySession = new PtyTerminalSession({
-    command: params.command,
-    cwd: ctx.cwd,
+    command,
+    cwd,
     cols,
     rows,
     scrollback: XTERM_SCROLLBACK_LINES,
@@ -28,7 +31,7 @@ export async function executePtyCommand(
   });
 
   const session: LiveSession = {
-    id: toolCallId,
+    id,
     startedAt: Date.now(),
     rows,
     visible: false,
@@ -56,11 +59,11 @@ export async function executePtyCommand(
     kill();
   };
 
-  if (params.timeout && params.timeout > 0) {
+  if (timeout && timeout > 0) {
     timeoutHandle = setTimeout(() => {
       timedOut = true;
       kill();
-    }, params.timeout * 1000);
+    }, timeout * 1000);
   }
   if (signal.aborted) {
     onAbort();
@@ -68,30 +71,75 @@ export async function executePtyCommand(
     signal.addEventListener('abort', onAbort, { once: true });
   }
 
-  const exit = await new Promise<{ exitCode: number | null }>((resolve) => {
-    ptySession.addExitListener((exitCode) => resolve({ exitCode }));
-  });
+  try {
+    const exit = await new Promise<{ exitCode: number | null }>((resolve) => {
+      ptySession.addExitListener((exitCode) => resolve({ exitCode }));
+    });
 
-  await ptySession.whenIdle();
-  if (timeoutHandle) clearTimeout(timeoutHandle);
-  signal.removeEventListener('abort', onAbort);
-  if (session.timer) clearTimeout(session.timer);
-  session.disposed = true;
-  hideWidget(ctx, session);
-  unsubscribe();
+    await ptySession.whenIdle();
+    const fullText = ptySession.getStrippedTextIncludingEntireScrollback();
 
-  const fullText = ptySession.getStrippedTextIncludingEntireScrollback();
-  ptySession.dispose();
-
-  if (aborted) {
-    throw buildAbortError(fullText);
+    return {
+      fullText,
+      exitCode: exit.exitCode,
+      timedOut,
+      aborted,
+    };
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+    signal.removeEventListener('abort', onAbort);
+    if (session.timer) clearTimeout(session.timer);
+    session.disposed = true;
+    hideWidget(ctx, session);
+    unsubscribe();
+    ptySession.dispose();
   }
-  if (timedOut && params.timeout && params.timeout > 0) {
-    throw buildTimeoutError(fullText, params.timeout);
+}
+
+export async function executePtyCommand(
+  toolCallId: string,
+  params: { command: string; timeout?: number },
+  signal: AbortSignal,
+  ctx: ExtensionContext,
+) {
+  const result = await runPtyCommand(toolCallId, params.command, ctx.cwd, params.timeout, signal, ctx);
+
+  if (result.aborted) {
+    throw buildAbortError(result.fullText);
   }
-  if (exit.exitCode !== 0 && exit.exitCode !== null) {
-    throw buildExitCodeError(fullText, exit.exitCode);
+  if (result.timedOut && params.timeout && params.timeout > 0) {
+    throw buildTimeoutError(result.fullText, params.timeout);
+  }
+  if (result.exitCode !== 0 && result.exitCode !== null) {
+    throw buildExitCodeError(result.fullText, result.exitCode);
   }
 
-  return buildSuccessfulBashResult(fullText);
+  return buildSuccessfulBashResult(result.fullText);
+}
+
+export function createPtyBashOperations(ctx: ExtensionContext): BashOperations {
+  return {
+    async exec(command, cwd, { onData, signal, timeout }) {
+      const result = await runPtyCommand(
+        `user-bash-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        command,
+        cwd,
+        timeout,
+        signal ?? new AbortController().signal,
+        ctx,
+      );
+
+      if (result.fullText) {
+        onData(Buffer.from(result.fullText, 'utf8'));
+      }
+      if (result.aborted) {
+        throw new Error('aborted');
+      }
+      if (result.timedOut) {
+        throw new Error(`timeout:${timeout}`);
+      }
+
+      return { exitCode: result.exitCode };
+    },
+  };
 }
