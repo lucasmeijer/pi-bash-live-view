@@ -36,6 +36,29 @@ export function buildTopBorder(title: string, innerWidth: number, elapsedMs: num
   return `${titleText}${fill}${timer}`.padEnd(innerWidth, '─').slice(0, innerWidth);
 }
 
+function charWidth(char: string): number {
+  const codePoint = char.codePointAt(0) ?? 0;
+  if (codePoint === 0) return 0;
+  if (codePoint < 32 || (codePoint >= 0x7f && codePoint < 0xa0)) return 0;
+  if (codePoint >= 0x300 && codePoint <= 0x36f) return 0;
+  if (codePoint >= 0xfe00 && codePoint <= 0xfe0f) return 0;
+  if (codePoint >= 0x1f000 && codePoint <= 0x1faff) return 2;
+  if (codePoint >= 0x2600 && codePoint <= 0x27bf) return 2;
+  if (codePoint >= 0x1100 && (
+    codePoint <= 0x115f ||
+    codePoint === 0x2329 ||
+    codePoint === 0x232a ||
+    (codePoint >= 0x2e80 && codePoint <= 0xa4cf) ||
+    (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+    (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+    (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+    (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+    (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+    (codePoint >= 0xffe0 && codePoint <= 0xffe6)
+  )) return 2;
+  return 1;
+}
+
 function fitAnsiLine(line: string, width: number): string {
   let out = '';
   let visible = 0;
@@ -49,9 +72,14 @@ function fitAnsiLine(line: string, width: number): string {
         continue;
       }
     }
-    out += line[i];
-    visible += 1;
-    i += 1;
+    const codePoint = line.codePointAt(i);
+    if (codePoint === undefined) break;
+    const char = String.fromCodePoint(codePoint);
+    const nextVisible = visible + charWidth(char);
+    if (nextVisible > width) break;
+    out += char;
+    visible = nextVisible;
+    i += char.length;
   }
   return `${out}\x1b[0m${' '.repeat(Math.max(0, width - visible))}`;
 }

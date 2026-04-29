@@ -1,8 +1,44 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import stripAnsi from 'strip-ansi';
 import { getShellConfig } from '@mariozechner/pi-coding-agent';
 import { PtyTerminalSession } from '../pty-session.ts';
 import { buildWidgetAnsiLines } from '../widget.ts';
+
+function visibleWidth(text) {
+  let width = 0;
+  for (const char of text) {
+    const codePoint = char.codePointAt(0) ?? 0;
+    if (codePoint === 0) continue;
+    if (codePoint < 32 || (codePoint >= 0x7f && codePoint < 0xa0)) continue;
+    if (codePoint >= 0x300 && codePoint <= 0x36f) continue;
+    if (codePoint >= 0xfe00 && codePoint <= 0xfe0f) continue;
+    if (codePoint >= 0x1f000 && codePoint <= 0x1faff) width += 2;
+    else if (codePoint >= 0x2600 && codePoint <= 0x27bf) width += 2;
+    else width += 1;
+  }
+  return width;
+}
+
+function defaultStyle() {
+  return {
+    bold: false,
+    dim: false,
+    italic: false,
+    underline: false,
+    inverse: false,
+    invisible: false,
+    strikethrough: false,
+    fgMode: 'default',
+    fg: 0,
+    bgMode: 'default',
+    bg: 0,
+  };
+}
+
+function snapshotLine(text) {
+  return [...text].map((ch) => ({ ch, style: defaultStyle() }));
+}
 
 function snapshotToText(snapshot) {
   return snapshot
@@ -85,6 +121,23 @@ test('PtyTerminalSession exposes minimal lifecycle, widget, and final-text APIs'
   } finally {
     session.dispose();
     session.dispose();
+  }
+});
+
+test('widget rendering keeps wide characters within the requested width', () => {
+  const width = 40;
+  const lines = buildWidgetAnsiLines({
+    snapshot: [snapshotLine('  ✅ VITE_FIREBASE_API_KEY: Configurada')],
+    width,
+    rows: 1,
+  });
+
+  assert.equal(lines.length, 3);
+  for (const line of lines) {
+    assert.ok(
+      visibleWidth(stripAnsi(line)) <= width,
+      `expected line to fit width ${width}: ${JSON.stringify(stripAnsi(line))}`,
+    );
   }
 });
 
