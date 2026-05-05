@@ -1,4 +1,5 @@
 import type { ExtensionContext } from '@mariozechner/pi-coding-agent';
+import { truncateToWidth, visibleWidth } from '@mariozechner/pi-tui';
 import { snapshotToAnsiContentLines } from './terminal-emulator.ts';
 import type { PtyTerminalSession } from './pty-session.ts';
 
@@ -31,29 +32,17 @@ export function formatElapsed(ms: number): string {
 export function buildTopBorder(title: string, innerWidth: number, elapsedMs: number): string {
   const timer = ` ${formatElapsed(elapsedMs)} `;
   const rawTitle = title ? ` ${title} ` : '';
-  const titleText = rawTitle.slice(0, Math.max(0, innerWidth - timer.length));
-  const fill = '─'.repeat(Math.max(0, innerWidth - titleText.length - timer.length));
-  return `${titleText}${fill}${timer}`.padEnd(innerWidth, '─').slice(0, innerWidth);
+  const availableTitleWidth = Math.max(0, innerWidth - visibleWidth(timer));
+  const titleText = truncateToWidth(rawTitle, availableTitleWidth, '');
+  const fillWidth = Math.max(0, innerWidth - visibleWidth(titleText) - visibleWidth(timer));
+  let line = `${titleText}${'─'.repeat(fillWidth)}${timer}`;
+  line = truncateToWidth(line, innerWidth, '');
+  return `${line}${'─'.repeat(Math.max(0, innerWidth - visibleWidth(line)))}`;
 }
 
 function fitAnsiLine(line: string, width: number): string {
-  let out = '';
-  let visible = 0;
-  let i = 0;
-  while (i < line.length && visible < width) {
-    if (line[i] === '\x1b' && line[i + 1] === '[') {
-      const match = line.slice(i).match(/^\x1b\[[0-9;]*m/);
-      if (match) {
-        out += match[0];
-        i += match[0].length;
-        continue;
-      }
-    }
-    out += line[i];
-    visible += 1;
-    i += 1;
-  }
-  return `${out}\x1b[0m${' '.repeat(Math.max(0, width - visible))}`;
+  const fitted = truncateToWidth(line, width, '');
+  return `${fitted}\x1b[0m${' '.repeat(Math.max(0, width - visibleWidth(fitted)))}`;
 }
 
 export function buildWidgetAnsiLines({
