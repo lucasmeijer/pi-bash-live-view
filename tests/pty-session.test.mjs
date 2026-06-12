@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getShellConfig } from '@mariozechner/pi-coding-agent';
+import { getShellConfig } from '@earendil-works/pi-coding-agent';
 import { PtyTerminalSession } from '../pty-session.ts';
 import { buildWidgetAnsiLines } from '../widget.ts';
 

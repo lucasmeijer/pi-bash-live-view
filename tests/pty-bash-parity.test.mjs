@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { createBashTool } from '@mariozechner/pi-coding-agent';
+import { createBashTool } from '@earendil-works/pi-coding-agent';
 import { executePtyCommand } from '../pty-execute.ts';
 
 function createCtx() {

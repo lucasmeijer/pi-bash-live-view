@@ -1,4 +1,4 @@
-import { createBashTool, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from '@mariozechner/pi-coding-agent';
+import { createBashTool, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Type } from '@sinclair/typebox';
 import { createPtyBashOperations, executePtyCommand } from './pty-execute.ts';
 import { ensureSpawnHelperExecutable } from './spawn-helper.ts';

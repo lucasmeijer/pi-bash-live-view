@@ -1,5 +1,5 @@
-import type { BashOperations, ExtensionContext } from '@mariozechner/pi-coding-agent';
-import { getShellConfig } from '@mariozechner/pi-coding-agent';
+import type { BashOperations, ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { getShellConfig } from '@earendil-works/pi-coding-agent';
 import { buildAbortError, buildExitCodeError, buildSuccessfulBashResult, buildTimeoutError } from './truncate.ts';
 import { hideWidget, showWidget, type LiveSession } from './widget.ts';
 import { PtyTerminalSession } from './pty-session.ts';

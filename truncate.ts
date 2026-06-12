@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DEFAULT_MAX_BYTES, formatSize, truncateTail } from '@mariozechner/pi-coding-agent';
+import { DEFAULT_MAX_BYTES, formatSize, truncateTail } from '@earendil-works/pi-coding-agent';
 
 function getTempFilePath() {
   const id = randomBytes(8).toString('hex');
